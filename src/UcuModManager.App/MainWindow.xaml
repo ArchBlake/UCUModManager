@@ -871,6 +871,10 @@
                 <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
                     <Button Content="Install Mods" Style="{StaticResource PrimaryButton}" Click="InstallModArchives_Click" />
                     <Button Content="Install Folder" Style="{StaticResource SecondaryButton}" Click="InstallModFolder_Click" />
+                    <Button x:Name="ToggleAllModsButton"
+                            Content="Enable All"
+                            Style="{StaticResource SecondaryButton}"
+                            Click="ToggleAllMods_Click" />
                     <Button Content="Check Updates" Style="{StaticResource SecondaryButton}" Click="CheckUpdates_Click" />
                     <Button Content="Update Mods" Style="{StaticResource SecondaryButton}" Click="UpdateMods_Click" />
                     <Button Content="Refresh" Style="{StaticResource SecondaryButton}" Click="Refresh_Click" />

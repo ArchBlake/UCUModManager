@@ -943,6 +943,22 @@ public partial class MainWindow : Window
         SaveProfileFromRows();
     }
 
+    private void ToggleAllMods_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isLoading || _mods.Count == 0)
+        {
+            return;
+        }
+
+        var enableAll = _mods.Any(mod => !mod.IsEnabled);
+        foreach (var mod in _mods)
+        {
+            mod.IsEnabled = enableAll;
+        }
+
+        SaveProfileFromRows();
+    }
+
     private void InstallModArchives_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
@@ -4287,6 +4303,7 @@ public partial class MainWindow : Window
         RefreshProfileSummary();
         RefreshProfilePageStatus();
         RefreshDeployStatus();
+        UpdateToggleAllModsButton();
         ModsListView.SelectedIndex = _mods.Count > 0 ? 0 : -1;
         if (_mods.Count == 0)
         {
@@ -4394,7 +4411,17 @@ public partial class MainWindow : Window
         _currentProfile = profile;
         ModsListView.Items.Refresh();
         RefreshProfileSummary();
+        UpdateToggleAllModsButton();
         ShowSelectedMod(ModsListView.SelectedItem as ModRow);
+    }
+
+    private void UpdateToggleAllModsButton()
+    {
+        var hasMods = _mods.Count > 0;
+        ToggleAllModsButton.IsEnabled = hasMods;
+        ToggleAllModsButton.Content = hasMods && _mods.All(mod => mod.IsEnabled)
+            ? "Disable All"
+            : "Enable All";
     }
 
     private void ActivateProfile(string profileId)
