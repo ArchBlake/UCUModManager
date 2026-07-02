@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+.tmp/
+dev-data/
+samples/
+downloads/
+secrets/
+*.user
+*.suo
+*.zip
+*.7z
+docs/
+
+CUModManager.code-workspace
