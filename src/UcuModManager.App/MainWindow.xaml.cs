@@ -923,6 +923,20 @@ public partial class MainWindow : Window
         Close();
     }
 
+    private void About_Click(object sender, RoutedEventArgs e)
+    {
+        MessageBox.Show(
+            this,
+            "UCU ModManager\n"
+            + "Development Build · Alpha Public\n\n"
+            + "Lead developer: Arch Blake\n"
+            + "Nexus metadata repository: Jimmyking\n\n"
+            + "Special thanks: Horus and VoidYuum",
+            "About UCU ModManager",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+    }
+
     private void MoveUp_Click(object sender, RoutedEventArgs e)
     {
         MoveSelectedMod(-1);

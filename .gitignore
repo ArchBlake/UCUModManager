@@ -6,6 +6,7 @@ dev-data/
 samples/
 downloads/
 secrets/
+artifacts/
 *.user
 *.suo
 *.zip

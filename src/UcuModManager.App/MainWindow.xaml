@@ -135,6 +135,45 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+        <Style x:Key="TitleBarTextButton" TargetType="Button">
+            <Setter Property="Height" Value="28" />
+            <Setter Property="MinWidth" Value="68" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushDark}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="Medium" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="5"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{StaticResource HoverBrush}" />
+                    <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="{StaticResource PressedBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
         <Style x:Key="CaptionButton" TargetType="Button">
             <Setter Property="Width" Value="46" />
             <Setter Property="Height" Value="34" />
@@ -831,7 +870,7 @@
                             CornerRadius="2"
                             Margin="0,0,10,0" />
                     <TextBlock Text="UCU ModManager" FontWeight="SemiBold" FontSize="14" />
-                    <TextBlock Text="Development Build"
+                    <TextBlock Text="Development Build · Alpha Public"
                                Foreground="{StaticResource MutedTextBrush}"
                                FontSize="12"
                                VerticalAlignment="Center"
@@ -840,7 +879,11 @@
 
                 <StackPanel Grid.Column="1"
                             Orientation="Horizontal"
+                            VerticalAlignment="Center"
                             shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <Button Content="About"
+                            Style="{StaticResource TitleBarTextButton}"
+                            Click="About_Click" />
                     <Button Content="&#xE921;"
                             Style="{StaticResource CaptionButton}"
                             Click="Minimize_Click" />
