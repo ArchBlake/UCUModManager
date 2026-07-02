@@ -774,10 +774,34 @@
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
 
-                        <StackPanel Grid.Row="0" Margin="0,0,0,10">
-                            <TextBlock x:Name="SelectedModNameText" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
-                            <TextBlock x:Name="SelectedModIdText" Style="{StaticResource MutedText}" />
-                        </StackPanel>
+                        <Grid Grid.Row="0" Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="58" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Width="48"
+                                    Height="48"
+                                    Background="{StaticResource PanelAltBrush}"
+                                    BorderBrush="{StaticResource BorderBrushDark}"
+                                    BorderThickness="1"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Top">
+                                <Image x:Name="SelectedModImage" Stretch="UniformToFill" />
+                            </Border>
+                            <StackPanel Grid.Column="1">
+                                <TextBlock x:Name="SelectedModNameText" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" TextWrapping="Wrap" />
+                                <TextBlock x:Name="SelectedModIdText" Style="{StaticResource MutedText}" TextWrapping="Wrap" />
+                                <TextBlock x:Name="SelectedModAuthorText" Style="{StaticResource MutedText}" TextWrapping="Wrap" />
+                                <DockPanel Margin="0,5,0,0" LastChildFill="True">
+                                    <Button x:Name="OpenSelectedModNexusButton"
+                                            Content="Open Nexus"
+                                            Style="{StaticResource SecondaryButton}"
+                                            Click="OpenSelectedModNexus_Click"
+                                            DockPanel.Dock="Left" />
+                                    <TextBlock x:Name="SelectedModNexusText" Style="{StaticResource MutedText}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                                </DockPanel>
+                            </StackPanel>
+                        </Grid>
 
                         <Grid Grid.Row="1" Margin="0,0,0,10">
                             <Grid.ColumnDefinitions>
@@ -830,6 +854,36 @@
                             </TabItem>
                             <TabItem Header="Warnings">
                                 <ListBox x:Name="WarningsListBox" />
+                            </TabItem>
+                            <TabItem Header="Nexus">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <StackPanel Margin="0,4,8,0">
+                                        <Border Height="160"
+                                                Background="{StaticResource PanelAltBrush}"
+                                                BorderBrush="{StaticResource BorderBrushDark}"
+                                                BorderThickness="1"
+                                                Margin="0,0,0,10">
+                                            <Image x:Name="SelectedModLargeImage" Stretch="UniformToFill" />
+                                        </Border>
+                                        <Grid Margin="0,0,0,8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Text="Version" Style="{StaticResource MutedText}" />
+                                                <TextBlock x:Name="SelectedNexusVersionText" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock Text="Downloads" Style="{StaticResource MutedText}" />
+                                                <TextBlock x:Name="SelectedNexusDownloadsText" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <TextBlock x:Name="SelectedNexusStatsText" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,10" />
+                                        <TextBlock Text="Description" Style="{StaticResource MutedText}" />
+                                        <TextBlock x:Name="SelectedNexusDescriptionText" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </ScrollViewer>
                             </TabItem>
                         </TabControl>
                     </Grid>

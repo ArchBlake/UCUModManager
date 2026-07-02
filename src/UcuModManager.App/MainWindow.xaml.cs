@@ -2,14 +2,18 @@ using Microsoft.Win32;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Interop;
 using UcuModManager.Core.BepInEx;
 using UcuModManager.Core.Deployment;
 using UcuModManager.Core.Games;
@@ -23,14 +27,8 @@ namespace UcuModManager.App;
 
 public partial class MainWindow : Window
 {
-    private static readonly IReadOnlyList<KnownNexusLink> KnownNexusLinks = new[]
-    {
-        new KnownNexusLink(
-            "scavprototype",
-            69,
-            new[] { "catpatch" },
-            new[] { "CatPatch", "Catpatch", "Cat Patch", "Cat-Patch" })
-    };
+    private const int WmGetMinMaxInfo = 0x0024;
+    private const int MonitorDefaultToNearest = 0x00000002;
 
     private readonly ManagerSettingsService _settingsService = new();
     private readonly ModLibraryService _libraryService = new();
@@ -43,10 +41,12 @@ public partial class MainWindow : Window
     private readonly ProfileDeployService _profileDeployService = new();
     private readonly VirtualizationPlanBuilder _virtualizationPlanBuilder = new();
     private readonly OverlayPreviewService _overlayPreviewService = new();
-    private readonly NexusUpdateCheckService _nexusUpdateCheckService = new();
     private readonly NexusModDownloadService _nexusModDownloadService = new();
-    private readonly NexusModSearchService _nexusModSearchService = new();
+    private readonly NexusMetadataCatalogService _nexusMetadataCatalogService = new();
+    private readonly NexusMetadataMatcher _nexusMetadataMatcher = new();
     private readonly SecureSecretStore _secureSecretStore = new();
+    private readonly HttpClient _imageHttpClient = new();
+    private readonly Dictionary<string, BitmapImage> _imageCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ObservableCollection<ModRow> _mods = new();
     private readonly ObservableCollection<ProfileRow> _profiles = new();
     private readonly ManagerPaths _managerPaths;
@@ -56,6 +56,7 @@ public partial class MainWindow : Window
     private ModProfile? _currentProfile;
     private bool _isLoading;
     private bool _isLoadingProfiles;
+    private int _selectedImageRequestId;
 
     public MainWindow()
     {
@@ -71,9 +72,54 @@ public partial class MainWindow : Window
         StorageRootText.Text = _managerPaths.RootPath;
         ModsListView.ItemsSource = _mods;
         ProfilesListBox.ItemsSource = _profiles;
+        SourceInitialized += MainWindow_SourceInitialized;
         RefreshSetupStatus();
         LoadMods();
         RefreshSettingsStatus();
+    }
+
+    private void MainWindow_SourceInitialized(object? sender, EventArgs e)
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+        HwndSource.FromHwnd(handle)?.AddHook(WndProc);
+    }
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WmGetMinMaxInfo)
+        {
+            ApplyMonitorWorkArea(hwnd, lParam);
+            handled = true;
+        }
+
+        return IntPtr.Zero;
+    }
+
+    private static void ApplyMonitorWorkArea(IntPtr hwnd, IntPtr lParam)
+    {
+        var monitor = MonitorFromWindow(hwnd, MonitorDefaultToNearest);
+        if (monitor == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var monitorInfo = new MonitorInfo
+        {
+            Size = Marshal.SizeOf<MonitorInfo>()
+        };
+        if (!GetMonitorInfo(monitor, ref monitorInfo))
+        {
+            return;
+        }
+
+        var minMaxInfo = Marshal.PtrToStructure<MinMaxInfo>(lParam);
+        var workArea = monitorInfo.WorkArea;
+        var monitorArea = monitorInfo.MonitorArea;
+        minMaxInfo.MaxPosition.X = Math.Abs(workArea.Left - monitorArea.Left);
+        minMaxInfo.MaxPosition.Y = Math.Abs(workArea.Top - monitorArea.Top);
+        minMaxInfo.MaxSize.X = Math.Abs(workArea.Right - workArea.Left);
+        minMaxInfo.MaxSize.Y = Math.Abs(workArea.Bottom - workArea.Top);
+        Marshal.StructureToPtr(minMaxInfo, lParam, false);
     }
 
     private void Refresh_Click(object sender, RoutedEventArgs e)
@@ -393,8 +439,7 @@ public partial class MainWindow : Window
         {
             var completion = await BuildLinkedNexusManifestAsync(
                 libraryEntry,
-                dialog.Result,
-                GetConfiguredNexusApiKey());
+                dialog.Result);
             var updatedManifest = completion.Manifest;
 
             _libraryService.SaveManifest(libraryEntry.ManifestPath, updatedManifest);
@@ -404,12 +449,12 @@ public partial class MainWindow : Window
             var versionLine = string.IsNullOrWhiteSpace(linkedSource?.FileVersion)
                 ? string.Empty
                 : $"\nVersion: {linkedSource.FileVersion}";
-            var apiLine = string.IsNullOrWhiteSpace(completion.Result?.ErrorMessage)
+            var metadataLine = string.IsNullOrWhiteSpace(completion.Result?.ErrorMessage)
                 ? string.Empty
-                : $"\n\nNexus API completion failed: {completion.Result.ErrorMessage}";
+                : $"\n\nMetadata completion note: {completion.Result.ErrorMessage}";
             MessageBox.Show(
                 this,
-                $"Linked '{libraryEntry.Mod.Name}' to Nexus #{linkedSource?.ModId}.{versionLine}{apiLine}",
+                $"Linked '{libraryEntry.Mod.Name}' to Nexus #{linkedSource?.ModId}.{versionLine}{metadataLine}",
                 "Link Nexus",
                 MessageBoxButton.OK,
                 string.IsNullOrWhiteSpace(completion.Result?.ErrorMessage)
@@ -436,7 +481,7 @@ public partial class MainWindow : Window
 
         var answer = MessageBox.Show(
             this,
-            "Automatically link installed mods to Nexus using archive names and API search?\n\nThese links may be wrong if an archive was renamed or packed in a non-standard way. If a mod id is missing from the archive name, the manager may scan Nexus mod ids for this game using your API key. Review the results before updating mods.",
+            "Automatically link installed mods to Nexus using the Casualties Unknown metadata catalog?\n\nThe manager will compare archive names, saved Nexus ids, mod names, and DLL names. Review the results before updating mods.",
             "Auto Link Nexus",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);
@@ -449,11 +494,11 @@ public partial class MainWindow : Window
         {
             AutoLinkNexusButton.IsEnabled = false;
             Mouse.OverrideCursor = Cursors.Wait;
-            SetAutoLinkStatus("Auto Link: preparing Nexus scan...", "WarningBrush");
+            SetAutoLinkStatus("Auto Link: loading metadata catalog...", "WarningBrush");
             await Task.Yield();
 
             var progress = new Progress<string>(message => SetAutoLinkStatus(message, "WarningBrush"));
-            var summary = await AutoLinkNexusModsAsync(GetConfiguredNexusApiKey(), progress);
+            var summary = await AutoLinkNexusModsAsync(progress);
             LoadMods();
             SetAutoLinkStatus(
                 $"Auto Link: linked {summary.Linked}, repaired {summary.Repaired}, cleared {summary.Cleared}, skipped {summary.Skipped}",
@@ -478,8 +523,7 @@ public partial class MainWindow : Window
 
     private async Task<NexusLinkCompletion> BuildLinkedNexusManifestAsync(
         ModLibraryEntry entry,
-        NexusLinkDialogResult result,
-        string? apiKey)
+        NexusLinkDialogResult result)
     {
         var source = new ModSourceInfo(
             "NexusMods",
@@ -490,10 +534,10 @@ public partial class MainWindow : Window
             entry.Manifest.Source?.FileTimestamp,
             entry.Manifest.Source?.SourceArchiveFileName ?? entry.Manifest.SourceArchiveFileName);
         var manifest = ApplyNexusSource(entry.Manifest, source);
-        return await CompleteNexusSourceFromApiAsync(manifest, apiKey);
+        return await CompleteNexusSourceFromCatalogAsync(entry with { Manifest = manifest });
     }
 
-    private async Task<NexusAutoLinkSummary> AutoLinkNexusModsAsync(string? apiKey, IProgress<string>? progress = null)
+    private async Task<NexusAutoLinkSummary> AutoLinkNexusModsAsync(IProgress<string>? progress = null)
     {
         var linked = 0;
         var completed = 0;
@@ -504,566 +548,77 @@ public partial class MainWindow : Window
         var apiErrors = 0;
         var searchLinked = 0;
         var searchErrors = 0;
-        var usedApi = !string.IsNullOrWhiteSpace(apiKey);
+        var usedApi = false;
         var details = new List<string>();
+        NexusMetadataCatalogLoadResult catalogLoad;
+        try
+        {
+            catalogLoad = await _nexusMetadataCatalogService.LoadAsync(_managerPaths);
+            if (!string.IsNullOrWhiteSpace(catalogLoad.Warning))
+            {
+                details.Add(catalogLoad.Warning);
+            }
+        }
+        catch (InvalidOperationException exception)
+        {
+            return new NexusAutoLinkSummary(0, 0, 0, 0, 0, _libraryEntries.Count, 0, 0, 1, false, new[] { exception.Message });
+        }
 
         var processed = 0;
         foreach (var entry in _libraryEntries)
         {
             processed++;
             progress?.Report($"Auto Link: {processed}/{_libraryEntries.Count} {entry.Mod.Name}");
+            var match = _nexusMetadataMatcher.FindBestMatch(entry, catalogLoad.Entries);
 
             if (entry.Manifest.Source?.CanCheckUpdates == true)
             {
-                if (usedApi)
+                if (match is null)
                 {
-                    var currentValidation = await ValidateCurrentNexusSourceAsync(entry, apiKey!);
-                    if (!currentValidation.IsReliable)
-                    {
-                        var repairDetection = await TryCreateNexusSourceForAutoLinkAsync(entry, apiKey);
-                        if (repairDetection.Error is not null)
-                        {
-                            searchErrors++;
-                            skipped++;
-                            details.Add($"{entry.Mod.Name}: skipped repair, Nexus search failed ({repairDetection.Error})");
-                            continue;
-                        }
-
-                        if (repairDetection.Source is not null
-                            && repairDetection.Source.ModId != entry.Manifest.Source.ModId)
-                        {
-                            var repairedManifest = ApplyNexusSource(entry.Manifest, repairDetection.Source);
-                            var repairCompletion = await CompleteNexusSourceFromApiAsync(repairedManifest, apiKey);
-                            if (repairCompletion.Result is not null && !string.IsNullOrWhiteSpace(repairCompletion.Result.ErrorMessage))
-                            {
-                                apiErrors++;
-                                details.Add($"{entry.Mod.Name}: repaired link, API check failed ({repairCompletion.Result.ErrorMessage})");
-                            }
-                            else
-                            {
-                                repairedManifest = repairCompletion.Manifest;
-                            }
-
-                            _libraryService.SaveManifest(entry.ManifestPath, repairedManifest);
-                            repaired++;
-                            if (repairDetection.WasSearchMatch)
-                            {
-                                searchLinked++;
-                            }
-
-                            details.Add(BuildAutoLinkDetail(entry.Mod.Name, repairedManifest.Source, $"repaired: {repairDetection.Description}"));
-                            continue;
-                        }
-
-                        _libraryService.SaveManifest(entry.ManifestPath, ClearUnreliableNexusSource(entry.Manifest));
-                        cleared++;
-                        details.Add($"{entry.Mod.Name}: cleared unreliable Nexus link ({currentValidation.Reason})");
-                        continue;
-                    }
-
-                    var refreshCompletion = await CompleteNexusSourceFromApiAsync(entry.Manifest, apiKey);
-                    if (refreshCompletion.Result is not null && !string.IsNullOrWhiteSpace(refreshCompletion.Result.ErrorMessage))
-                    {
-                        apiErrors++;
-                        alreadyLinked++;
-                        details.Add($"{entry.Mod.Name}: already linked, API refresh failed ({refreshCompletion.Result.ErrorMessage})");
-                    }
-                    else
-                    {
-                        _libraryService.SaveManifest(entry.ManifestPath, refreshCompletion.Manifest);
-                        completed++;
-                        details.Add(BuildAutoLinkDetail(entry.Mod.Name, refreshCompletion.Manifest.Source, "refreshed"));
-                    }
-
+                    _libraryService.SaveManifest(entry.ManifestPath, ClearUnreliableNexusSource(entry.Manifest));
+                    cleared++;
+                    details.Add($"{entry.Mod.Name}: cleared unreliable Nexus link (not found in metadata catalog)");
                     continue;
                 }
 
-                alreadyLinked++;
+                var updatedSource = CreateNexusSourceFromMetadata(entry, match.Entry);
+                var updatedManifest = ApplyNexusSource(entry.Manifest, updatedSource);
+                var result = CheckNexusUpdateFromMetadata(updatedManifest, match.Entry);
+                updatedManifest = ApplyNexusUpdateCheckResult(updatedManifest, result);
+                _libraryService.SaveManifest(entry.ManifestPath, updatedManifest);
 
-                continue;
-            }
-
-            var detection = await TryCreateNexusSourceForAutoLinkAsync(entry, apiKey);
-            if (detection.Error is not null)
-            {
-                searchErrors++;
-                skipped++;
-                details.Add($"{entry.Mod.Name}: skipped, Nexus search failed ({detection.Error})");
-                continue;
-            }
-
-            if (detection.Source is null)
-            {
-                skipped++;
-                details.Add($"{entry.Mod.Name}: skipped, no reliable Nexus match found");
-                continue;
-            }
-
-            var manifest = ApplyNexusSource(entry.Manifest, detection.Source);
-            if (usedApi)
-            {
-                var completion = await CompleteNexusSourceFromApiAsync(manifest, apiKey);
-                if (completion.Result is not null && !string.IsNullOrWhiteSpace(completion.Result.ErrorMessage))
+                if (entry.Manifest.Source.ModId != updatedSource.ModId)
                 {
-                    apiErrors++;
-                    details.Add($"{entry.Mod.Name}: linked from archive name, API check failed ({completion.Result.ErrorMessage})");
+                    repaired++;
+                    details.Add(BuildAutoLinkDetail(entry.Mod.Name, updatedManifest.Source, $"repaired from metadata ({match.Reason}, score {match.Score})"));
                 }
                 else
                 {
-                    manifest = completion.Manifest;
+                    completed++;
+                    details.Add(BuildAutoLinkDetail(entry.Mod.Name, updatedManifest.Source, $"refreshed from metadata ({match.Reason}, score {match.Score})"));
                 }
+
+                continue;
             }
 
+            if (match is null)
+            {
+                skipped++;
+                details.Add($"{entry.Mod.Name}: skipped, no reliable metadata match found");
+                continue;
+            }
+
+            var manifest = ApplyNexusSource(entry.Manifest, CreateNexusSourceFromMetadata(entry, match.Entry));
+            var checkResult = CheckNexusUpdateFromMetadata(manifest, match.Entry);
+            manifest = ApplyNexusUpdateCheckResult(manifest, checkResult);
             _libraryService.SaveManifest(entry.ManifestPath, manifest);
             linked++;
-            if (detection.WasSearchMatch)
-            {
-                searchLinked++;
-            }
+            searchLinked++;
 
-            details.Add(BuildAutoLinkDetail(entry.Mod.Name, manifest.Source, detection.Description));
+            details.Add(BuildAutoLinkDetail(entry.Mod.Name, manifest.Source, $"linked from metadata ({match.Reason}, score {match.Score})"));
         }
 
         return new NexusAutoLinkSummary(linked, completed, repaired, cleared, alreadyLinked, skipped, apiErrors, searchLinked, searchErrors, usedApi, details);
-    }
-
-    private async Task<NexusAutoLinkDetection> TryCreateNexusSourceForAutoLinkAsync(ModLibraryEntry entry, string? apiKey)
-    {
-        var knownSource = TryCreateKnownNexusSource(entry);
-        if (knownSource is not null)
-        {
-            return new NexusAutoLinkDetection(knownSource, true, "linked from known Nexus mapping", null);
-        }
-
-        var detectedSource = TryCreateDetectedNexusSource(entry);
-        if (detectedSource is not null)
-        {
-            return new NexusAutoLinkDetection(detectedSource, false, "linked from archive name", null);
-        }
-
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            return new NexusAutoLinkDetection(null, false, string.Empty, "Nexus API key is required for name search");
-        }
-
-        try
-        {
-            var searchMatch = await TryFindNexusSourceBySearchAsync(entry, apiKey);
-            return searchMatch is null
-                ? new NexusAutoLinkDetection(null, false, string.Empty, null)
-                : new NexusAutoLinkDetection(searchMatch.Source, true, $"linked by search: {searchMatch.Title}", null);
-        }
-        catch (Exception exception) when (exception is HttpRequestException
-            or TaskCanceledException
-            or IOException
-            or InvalidOperationException)
-        {
-            return new NexusAutoLinkDetection(null, false, string.Empty, exception.Message);
-        }
-    }
-
-    private ModSourceInfo? TryCreateKnownNexusSource(ModLibraryEntry entry)
-    {
-        var knownLink = FindKnownNexusLink(entry);
-        if (knownLink is null)
-        {
-            return null;
-        }
-
-        var archiveFileName = GetSourceArchiveFileName(entry);
-        return new ModSourceInfo(
-            "NexusMods",
-            NormalizeNexusGameDomain(knownLink.GameDomain),
-            knownLink.ModId,
-            null,
-            GetKnownModVersion(entry.Mod.Version)
-                ?? GetKnownModVersion(ModSourceDetector.DetectVersion(archiveFileName)),
-            entry.Manifest.Source?.FileTimestamp,
-            archiveFileName);
-    }
-
-    private ModSourceInfo? TryCreateDetectedNexusSource(ModLibraryEntry entry)
-    {
-        var archiveFileName = entry.Manifest.Source?.SourceArchiveFileName;
-        if (string.IsNullOrWhiteSpace(archiveFileName))
-        {
-            archiveFileName = entry.Manifest.SourceArchiveFileName;
-        }
-
-        var detectedVersion = ModSourceDetector.DetectVersion(archiveFileName);
-        var detectedSource = ModSourceDetector.Detect(archiveFileName, detectedVersion);
-        if (detectedSource?.ModId is null)
-        {
-            return null;
-        }
-
-        return new ModSourceInfo(
-            "NexusMods",
-            NormalizeNexusGameDomain(detectedSource.GameDomain),
-            detectedSource.ModId,
-            detectedSource.FileId ?? entry.Manifest.Source?.FileId,
-            GetKnownModVersion(detectedSource.FileVersion)
-                ?? GetKnownModVersion(entry.Mod.Version)
-                ?? GetKnownModVersion(detectedVersion),
-            detectedSource.FileTimestamp ?? entry.Manifest.Source?.FileTimestamp,
-            archiveFileName);
-    }
-
-    private async Task<NexusSearchMatch?> TryFindNexusSourceBySearchAsync(ModLibraryEntry entry, string apiKey)
-    {
-        var archiveFileName = GetSourceArchiveFileName(entry);
-        var version = GetKnownModVersion(entry.Mod.Version)
-            ?? GetKnownModVersion(ModSourceDetector.DetectVersion(archiveFileName));
-        var queries = BuildNexusSearchQueries(entry);
-
-        foreach (var domain in GetNexusGameDomainCandidates(_settings.NexusGameDomain))
-        {
-            var results = await _nexusModSearchService.SearchAsync(domain, queries.FirstOrDefault() ?? entry.Mod.Name, apiKey);
-            var candidates = results
-                .Select(result => new
-                {
-                    Result = result,
-                    Score = queries.Max(query => ScoreNexusSearchResult(entry, query, result))
-                })
-                .Where(match => match.Score >= 60)
-                .OrderByDescending(match => match.Score)
-                .ThenBy(match => match.Result.ModId)
-                .Take(30)
-                .ToArray();
-
-            var verified = new List<NexusSearchMatch>();
-            foreach (var candidate in candidates)
-            {
-                var files = await _nexusModSearchService.GetFilesAsync(candidate.Result.GameDomain, candidate.Result.ModId, apiKey);
-                var evidence = ScoreNexusFileEvidence(entry, candidate.Result, files);
-                if (!evidence.IsReliable)
-                {
-                    continue;
-                }
-
-                var source = new ModSourceInfo(
-                    "NexusMods",
-                    candidate.Result.GameDomain,
-                    candidate.Result.ModId,
-                    evidence.FileId,
-                    GetKnownModVersion(evidence.Version) ?? version,
-                    null,
-                    archiveFileName);
-                verified.Add(new NexusSearchMatch(source, candidate.Result.Title, candidate.Score + evidence.Score));
-            }
-
-            var best = verified
-                .OrderByDescending(match => match.Score)
-                .ThenBy(match => match.Source.ModId)
-                .FirstOrDefault();
-            if (best is not null)
-            {
-                return best;
-            }
-        }
-
-        return null;
-    }
-
-    private static IReadOnlyList<string> BuildNexusSearchQueries(ModLibraryEntry entry)
-    {
-        var archiveName = BuildSearchNameFromArchive(GetSourceArchiveFileName(entry));
-        return new[]
-        {
-            entry.Mod.Name,
-            archiveName,
-            entry.Mod.Id.Replace('-', ' ')
-        }
-        .Concat(entry.Mod.Assemblies.Select(assembly => assembly.Name))
-        .Concat(ExtractDocumentationAliases(entry))
-        .Concat(BuildKnownNexusAliases(entry))
-        .Where(query => !string.IsNullOrWhiteSpace(query))
-        .Select(query => Regex.Replace(query!.Trim(), @"\s+", " "))
-        .Where(query => query.Length >= 3)
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .ToArray();
-    }
-
-    private static IReadOnlyList<string> ExtractDocumentationAliases(ModLibraryEntry entry)
-    {
-        var aliases = new List<string>();
-        foreach (var file in entry.Mod.Files.Where(file => file.TargetKind == ModTargetKind.Documentation).Take(5))
-        {
-            var path = Path.Combine(entry.ModDirectoryPath, "files", file.NormalizedTargetRelativePath);
-            if (!File.Exists(path))
-            {
-                continue;
-            }
-
-            try
-            {
-                var text = File.ReadAllText(path);
-                if (text.Length > 8192)
-                {
-                    text = text[..8192];
-                }
-
-                aliases.AddRange(Regex.Matches(text, @"""(?<title>[^""]{4,80})""")
-                    .Select(match => match.Groups["title"].Value));
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-            }
-        }
-
-        return aliases
-            .Select(alias => alias.Replace(':', ' ').Trim())
-            .Where(alias => alias.Length >= 3)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-    }
-
-    private static IReadOnlyList<string> BuildKnownNexusAliases(ModLibraryEntry entry)
-    {
-        var aliases = new List<string>();
-        if (entry.Mod.Id.Equals("krokmp", StringComparison.OrdinalIgnoreCase)
-            || entry.Mod.Name.Equals("KrokMP", StringComparison.OrdinalIgnoreCase))
-        {
-            aliases.Add("Casualties Together");
-        }
-
-        var knownLink = FindKnownNexusLink(entry);
-        if (knownLink is not null)
-        {
-            aliases.AddRange(knownLink.Aliases);
-        }
-
-        return aliases
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-    }
-
-    private static KnownNexusLink? FindKnownNexusLink(ModLibraryEntry entry)
-    {
-        return KnownNexusLinks.FirstOrDefault(link =>
-            link.ModIdHints.Contains(entry.Mod.Id, StringComparer.OrdinalIgnoreCase)
-            || link.ModIdHints.Contains(entry.Mod.Name, StringComparer.OrdinalIgnoreCase)
-            || link.Aliases.Contains(entry.Mod.Name, StringComparer.OrdinalIgnoreCase)
-            || entry.Mod.Assemblies.Any(assembly => link.Aliases.Contains(assembly.Name, StringComparer.OrdinalIgnoreCase)));
-    }
-
-    private static string BuildSearchNameFromArchive(string archiveFileName)
-    {
-        var name = Path.GetFileNameWithoutExtension(archiveFileName);
-        name = Regex.Replace(name, @"(?i)-\d+-(?:v?\d+(?:[.-]\d+)*|\d+)-\d{9,}$", " ");
-        name = Regex.Replace(name, @"(?i)_[A-Za-z0-9]{8,}$", " ");
-        name = Regex.Replace(name, @"(?i)(?:^|[_-])v?\d+(?:[._-]\d+)+(?:-for-\d+(?:[._-]\d+)*)?(?=[_-]|$)", " ");
-        name = Regex.Replace(name, @"(?i)v\d+(?:\.\d+)+", " ");
-        name = Regex.Replace(name, @"(?i)(?:^|[_-])\d+(?=[_-]|$)", " ");
-        name = Regex.Replace(name, @"[_\-.]+", " ");
-        return Regex.Replace(name, @"\s+", " ").Trim();
-    }
-
-    private static int ScoreNexusSearchResult(ModLibraryEntry entry, string query, NexusModSearchResult result)
-    {
-        var candidate = NormalizeSearchComparable(result.Title);
-        if (string.IsNullOrWhiteSpace(candidate))
-        {
-            candidate = NormalizeSearchComparable(result.Url);
-        }
-
-        var localNames = BuildNexusSearchQueries(entry)
-            .Append(query)
-            .Select(NormalizeSearchComparable)
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        var bestScore = 0;
-        foreach (var localName in localNames)
-        {
-            if (candidate.Equals(localName, StringComparison.OrdinalIgnoreCase))
-            {
-                bestScore = Math.Max(bestScore, 100);
-                continue;
-            }
-
-            if (candidate.StartsWith(localName, StringComparison.OrdinalIgnoreCase)
-                || localName.StartsWith(candidate, StringComparison.OrdinalIgnoreCase))
-            {
-                bestScore = Math.Max(bestScore, 88);
-            }
-
-            if (candidate.Contains(localName, StringComparison.OrdinalIgnoreCase)
-                || localName.Contains(candidate, StringComparison.OrdinalIgnoreCase))
-            {
-                bestScore = Math.Max(bestScore, 78);
-            }
-
-            var localTokens = TokenizeSearchComparable(localName);
-            var candidateTokens = TokenizeSearchComparable(candidate);
-            if (localTokens.Length == 0 || candidateTokens.Length == 0)
-            {
-                continue;
-            }
-
-            var commonTokens = localTokens.Intersect(candidateTokens, StringComparer.OrdinalIgnoreCase).Count();
-            var tokenScore = (int)Math.Round(commonTokens * 72.0 / Math.Max(localTokens.Length, candidateTokens.Length));
-            bestScore = Math.Max(bestScore, tokenScore);
-        }
-
-        return Math.Max(0, bestScore - GetForeignDescriptorPenalty(entry, result.Title));
-    }
-
-    private async Task<NexusSourceValidation> ValidateCurrentNexusSourceAsync(ModLibraryEntry entry, string apiKey)
-    {
-        var source = entry.Manifest.Source;
-        if (source?.ModId is null || string.IsNullOrWhiteSpace(source.GameDomain))
-        {
-            return new NexusSourceValidation(false, "missing Nexus mod id");
-        }
-
-        var files = await _nexusModSearchService.GetFilesAsync(source.GameDomain, source.ModId.Value, apiKey);
-        if (files.Count == 0)
-        {
-            return new NexusSourceValidation(false, "Nexus files not found");
-        }
-
-        var result = new NexusModSearchResult(
-            source.GameDomain,
-            source.ModId.Value,
-            entry.Mod.Name,
-            $"https://www.nexusmods.com/{source.GameDomain}/mods/{source.ModId.Value}");
-        var evidence = ScoreNexusFileEvidence(entry, result, files);
-        return evidence.IsReliable
-            ? new NexusSourceValidation(true, evidence.Reason)
-            : new NexusSourceValidation(false, evidence.Reason);
-    }
-
-    private static NexusFileEvidence ScoreNexusFileEvidence(
-        ModLibraryEntry entry,
-        NexusModSearchResult result,
-        IReadOnlyList<NexusModFileSearchResult> files)
-    {
-        var strongTitleMatch = IsStrongTitleMatch(entry, result.Title);
-        if (files.Count == 0)
-        {
-            return strongTitleMatch
-                ? new NexusFileEvidence(true, 75, null, null, "exact Nexus title matched")
-                : new NexusFileEvidence(false, 0, null, null, "no Nexus files");
-        }
-
-        var archiveFileName = GetSourceArchiveFileName(entry);
-        var expectedVersion = GetKnownModVersion(entry.Mod.Version)
-            ?? GetKnownModVersion(ModSourceDetector.DetectVersion(archiveFileName));
-        var localNames = BuildNexusSearchQueries(entry)
-            .Select(NormalizeSearchComparable)
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        var assemblyNames = entry.Mod.Assemblies
-            .Select(assembly => NormalizeSearchComparable(assembly.Name))
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        var titlePenalty = GetForeignDescriptorPenalty(entry, result.Title);
-
-        var bestScore = 0;
-        NexusModFileSearchResult? bestFile = null;
-        foreach (var file in files)
-        {
-            var fileName = NormalizeSearchComparable(file.Name ?? string.Empty);
-            var fileScore = 0;
-            if (!string.IsNullOrWhiteSpace(expectedVersion)
-                && !string.IsNullOrWhiteSpace(file.Version)
-                && VersionsEqual(expectedVersion, file.Version))
-            {
-                fileScore += 80;
-            }
-
-            if (localNames.Any(name => !string.IsNullOrWhiteSpace(name)
-                && (fileName.Contains(name, StringComparison.OrdinalIgnoreCase)
-                    || name.Contains(fileName, StringComparison.OrdinalIgnoreCase))))
-            {
-                fileScore += 45;
-            }
-
-            if (assemblyNames.Any(name => !string.IsNullOrWhiteSpace(name)
-                && fileName.Contains(name, StringComparison.OrdinalIgnoreCase)))
-            {
-                fileScore += 25;
-            }
-
-            if (IsLikelyMainNexusFile(file))
-            {
-                fileScore += 10;
-            }
-
-            if (strongTitleMatch)
-            {
-                fileScore += 25;
-            }
-
-            fileScore = Math.Max(0, fileScore - titlePenalty);
-            if (fileScore > bestScore)
-            {
-                bestScore = fileScore;
-                bestFile = file;
-            }
-        }
-
-        if (bestFile is null)
-        {
-            return new NexusFileEvidence(false, 0, null, null, "no matching Nexus file");
-        }
-
-        return new NexusFileEvidence(
-            bestScore >= 70 || (strongTitleMatch && bestScore >= 35),
-            bestScore,
-            bestFile.FileId,
-            bestFile.Version,
-            bestScore >= 70 || (strongTitleMatch && bestScore >= 35)
-                ? strongTitleMatch ? "exact title and file evidence matched" : "file/version evidence matched"
-                : "weak file/version evidence");
-    }
-
-    private static bool IsStrongTitleMatch(ModLibraryEntry entry, string title)
-    {
-        var normalizedTitle = NormalizeSearchComparable(title);
-        return BuildNexusSearchQueries(entry)
-            .Select(NormalizeSearchComparable)
-            .Where(query => !string.IsNullOrWhiteSpace(query))
-            .Any(query => query.Equals(normalizedTitle, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static int GetForeignDescriptorPenalty(ModLibraryEntry entry, string title)
-    {
-        var localTokens = BuildNexusSearchQueries(entry)
-            .SelectMany(TokenizeSearchComparable)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var candidateTokens = TokenizeSearchComparable(title);
-        var foreignDescriptors = new[]
-        {
-            "translation",
-            "translations",
-            "supplement",
-            "chinese",
-            "simplified",
-            "traditional",
-            "russian",
-            "localization",
-            "localisation",
-            "language",
-            "japanese",
-            "korean",
-            "german",
-            "french",
-            "spanish",
-            "italian",
-            "polish",
-            "portuguese",
-            "turkish"
-        };
-
-        return candidateTokens.Any(token => foreignDescriptors.Contains(token, StringComparer.OrdinalIgnoreCase)
-            && !localTokens.Contains(token))
-                ? 60
-                : 0;
     }
 
     private static bool VersionsEqual(string first, string second)
@@ -1089,65 +644,11 @@ public partial class MainWindow : Window
         return value.Replace('-', '.');
     }
 
-    private static bool IsLikelyMainNexusFile(NexusModFileSearchResult file)
-    {
-        return file.CategoryId == 1
-            || file.CategoryName?.Contains("main", StringComparison.OrdinalIgnoreCase) == true;
-    }
-
-    private static string NormalizeSearchComparable(string value)
-    {
-        var spaced = Regex.Replace(value, "([a-z])([A-Z])", "$1 $2");
-        spaced = Regex.Replace(spaced, @"(?i)\bv?\d+(?:[.\-_]\d+)+\b", " ");
-        spaced = Regex.Replace(spaced, @"[^A-Za-z0-9]+", " ");
-        return Regex.Replace(spaced.ToLowerInvariant(), @"\s+", " ").Trim();
-    }
-
-    private static string[] TokenizeSearchComparable(string value)
-    {
-        return NormalizeSearchComparable(value)
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(token => token.Length > 1)
-            .Where(token => !int.TryParse(token, out _))
-            .Where(token => !token.Equals("mod", StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-    }
-
     private static string GetSourceArchiveFileName(ModLibraryEntry entry)
     {
         return string.IsNullOrWhiteSpace(entry.Manifest.Source?.SourceArchiveFileName)
             ? entry.Manifest.SourceArchiveFileName
             : entry.Manifest.Source!.SourceArchiveFileName;
-    }
-
-    private async Task<NexusLinkCompletion> CompleteNexusSourceFromApiAsync(ModManifest manifest, string? apiKey)
-    {
-        if (string.IsNullOrWhiteSpace(apiKey) || manifest.Source?.CanCheckUpdates != true)
-        {
-            return new NexusLinkCompletion(manifest, null);
-        }
-
-        var result = await CheckNexusUpdateWithDomainFallback(manifest, apiKey);
-        if (!string.IsNullOrWhiteSpace(result.ErrorMessage))
-        {
-            return new NexusLinkCompletion(manifest, result);
-        }
-
-        var source = manifest.Source!;
-        var completedSource = source with
-        {
-            GameDomain = string.IsNullOrWhiteSpace(result.GameDomain)
-                ? source.GameDomain
-                : result.GameDomain,
-            ModId = result.NexusModId ?? source.ModId,
-            FileId = source.FileId ?? result.LatestFileId,
-            FileVersion = GetKnownModVersion(source.FileVersion)
-                ?? GetKnownModVersion(result.LatestVersion),
-            LastUpdateStatus = BuildUpdateStatusText(result),
-            LastLatestVersion = result.LatestVersion,
-            LastCheckedAt = DateTimeOffset.UtcNow
-        };
-        return new NexusLinkCompletion(ApplyNexusSource(manifest, completedSource), result);
     }
 
     private static ModManifest ApplyNexusUpdateCheckResult(ModManifest manifest, NexusUpdateCheckResult result)
@@ -1173,12 +674,34 @@ public partial class MainWindow : Window
             source = source with
             {
                 FileId = source.FileId ?? result.LatestFileId,
-                FileVersion = GetKnownModVersion(source.FileVersion)
-                    ?? GetKnownModVersion(result.LatestVersion)
+                FileVersion = ResolveLatestVersionForCurrentInstall(source, result)
             };
         }
 
         return manifest with { Source = source };
+    }
+
+    private static string? ResolveLatestVersionForCurrentInstall(ModSourceInfo source, NexusUpdateCheckResult result)
+    {
+        var latestVersion = GetKnownModVersion(result.LatestVersion);
+        var currentVersion = GetKnownModVersion(source.FileVersion);
+        if (string.IsNullOrWhiteSpace(latestVersion))
+        {
+            return currentVersion;
+        }
+
+        if (source.FileId is not null
+            && source.FileId.Value.ToString().Equals(TrimSimpleVersion(latestVersion), StringComparison.OrdinalIgnoreCase))
+        {
+            return latestVersion;
+        }
+
+        if (source.FileId is not null && result.LatestFileId is not null && source.FileId.Value == result.LatestFileId.Value)
+        {
+            return latestVersion;
+        }
+
+        return currentVersion ?? latestVersion;
     }
 
     private static ModManifest ApplyNexusSource(ModManifest manifest, ModSourceInfo source)
@@ -1239,6 +762,11 @@ public partial class MainWindow : Window
             : version.Trim();
     }
 
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
+    }
+
     private static string BuildAutoLinkDetail(string modName, ModSourceInfo? source, string action)
     {
         var version = string.IsNullOrWhiteSpace(source?.FileVersion)
@@ -1252,19 +780,18 @@ public partial class MainWindow : Window
         var lines = new List<string>
         {
             $"Linked: {summary.Linked}",
-            $"Linked by search: {summary.SearchLinked}",
+            $"Linked by metadata: {summary.SearchLinked}",
             $"Repaired: {summary.Repaired}",
             $"Cleared unreliable: {summary.Cleared}",
             $"Completed existing links: {summary.Completed}",
             $"Already linked: {summary.AlreadyLinked}",
             $"Skipped: {summary.Skipped}",
-            $"API errors: {summary.ApiErrors}",
-            $"Search errors: {summary.SearchErrors}"
+            $"Metadata errors: {summary.SearchErrors}"
         };
 
         if (!summary.UsedApi)
         {
-            lines.Add("Nexus API was not used because no API key is configured. Some file ids or versions may remain incomplete.");
+            lines.Add("Nexus API was not used for matching. The metadata catalog provided ids, versions, and images.");
         }
 
         if (summary.Details.Count > 0)
@@ -1287,19 +814,6 @@ public partial class MainWindow : Window
 
     private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
     {
-        var apiKey = GetConfiguredNexusApiKey();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            MessageBox.Show(
-                this,
-                "Nexus API key is not configured. Open Settings and save your Nexus Mods API key first.",
-                "Nexus API key required",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            NavigationListBox.SelectedIndex = 2;
-            return;
-        }
-
         var checkableEntries = GetCheckableNexusEntries();
         if (checkableEntries.Length == 0)
         {
@@ -1309,10 +823,10 @@ public partial class MainWindow : Window
 
         try
         {
-            var results = await CheckNexusUpdatesAsync(checkableEntries, apiKey);
+            var results = await CheckNexusUpdatesAsync(checkableEntries);
             ShowUpdateCheckResults(results);
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException)
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or InvalidOperationException)
         {
             MessageBox.Show(this, exception.Message, "Check Updates failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
@@ -1321,18 +835,6 @@ public partial class MainWindow : Window
     private async void UpdateMods_Click(object sender, RoutedEventArgs e)
     {
         var apiKey = GetConfiguredNexusApiKey();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            MessageBox.Show(
-                this,
-                "Nexus API key is not configured. Open Settings and save your Nexus Mods API key first.",
-                "Nexus API key required",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            NavigationListBox.SelectedIndex = 2;
-            return;
-        }
-
         var checkableEntries = GetCheckableNexusEntries();
         if (checkableEntries.Length == 0)
         {
@@ -1342,7 +844,7 @@ public partial class MainWindow : Window
 
         try
         {
-            var results = await CheckNexusUpdatesAsync(checkableEntries, apiKey);
+            var results = await CheckNexusUpdatesAsync(checkableEntries);
             var updatePlans = BuildNexusUpdatePlans(checkableEntries, results);
             var skippedUpdates = results
                 .Where(result => result.IsUpdateAvailable)
@@ -1355,6 +857,19 @@ public partial class MainWindow : Window
             {
                 ShowNoDownloadableUpdates(results, skippedUpdates);
                 OfferManualFallbackForUpdates(skippedUpdates.Concat(apiErrorFallbacks));
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                MessageBox.Show(
+                    this,
+                    "Nexus API key is not configured. Update checks use the metadata catalog, but automatic downloads still need your Nexus Mods API key. You can download manually from Nexus and use Install Mods.",
+                    "Nexus API key required",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                OfferManualFallbackForUpdates(updatePlans.Select(plan => plan.Result).Concat(skippedUpdates));
+                NavigationListBox.SelectedIndex = 2;
                 return;
             }
 
@@ -1875,7 +1390,7 @@ public partial class MainWindow : Window
             $"Checked: {results.Count}",
             $"Latest version: {latestVersion}",
             $"Updates available: {updates.Length}",
-            $"API errors: {errors.Length}"
+            $"Metadata errors: {errors.Length}"
         };
 
         var detailLines = updates
@@ -1898,8 +1413,7 @@ public partial class MainWindow : Window
     }
 
     private async Task<IReadOnlyList<NexusUpdateCheckResult>> CheckNexusUpdatesAsync(
-        IReadOnlyList<ModLibraryEntry> checkableEntries,
-        string apiKey)
+        IReadOnlyList<ModLibraryEntry> checkableEntries)
     {
         foreach (var row in _mods.Where(mod => mod.CanCheckUpdates))
         {
@@ -1908,12 +1422,25 @@ public partial class MainWindow : Window
 
         ModsListView.Items.Refresh();
 
+        var catalogLoad = await _nexusMetadataCatalogService.LoadAsync(_managerPaths);
         var results = new List<NexusUpdateCheckResult>();
         foreach (var entry in checkableEntries)
         {
-            var result = await CheckNexusUpdateWithDomainFallback(entry.Manifest, apiKey);
+            var match = _nexusMetadataMatcher.FindBestMatch(entry, catalogLoad.Entries);
+            var (result, manifest) = match is null
+                ? (new NexusUpdateCheckResult(
+                    entry.Mod.Id,
+                    "Metadata missing",
+                    false,
+                    null,
+                    null,
+                    "The linked mod was not found in the metadata catalog.",
+                    entry.Manifest.Source?.GameDomain,
+                    entry.Manifest.Source?.ModId),
+                    entry.Manifest)
+                : CheckNexusUpdateWithMetadata(entry, match.Entry);
             results.Add(result);
-            PersistNexusUpdateCheck(entry, result);
+            PersistNexusUpdateCheck(entry, result, manifest);
             var row = _mods.FirstOrDefault(mod => mod.Id.Equals(result.ModId, StringComparison.OrdinalIgnoreCase));
             if (row is not null)
             {
@@ -1926,14 +1453,14 @@ public partial class MainWindow : Window
         return results;
     }
 
-    private void PersistNexusUpdateCheck(ModLibraryEntry entry, NexusUpdateCheckResult result)
+    private void PersistNexusUpdateCheck(ModLibraryEntry entry, NexusUpdateCheckResult result, ModManifest manifest)
     {
-        if (entry.Manifest.Source is null)
+        if (manifest.Source is null)
         {
             return;
         }
 
-        _libraryService.SaveManifest(entry.ManifestPath, ApplyNexusUpdateCheckResult(entry.Manifest, result));
+        _libraryService.SaveManifest(entry.ManifestPath, ApplyNexusUpdateCheckResult(manifest, result));
     }
 
     private ModLibraryEntry[] GetCheckableNexusEntries()
@@ -1972,7 +1499,7 @@ public partial class MainWindow : Window
         {
             "No downloadable updates were found.",
             $"Updates requiring manual review: {skippedUpdates.Count}",
-            $"API errors: {errors.Length}",
+            $"Metadata errors: {errors.Length}",
             "If Nexus refuses automatic download links, the account may need Nexus Premium."
         };
 
@@ -2087,6 +1614,11 @@ public partial class MainWindow : Window
     private void OpenNexusFilesPage(string gameDomain, int modId)
     {
         var uri = $"https://www.nexusmods.com/{gameDomain}/mods/{modId}?tab=files";
+        OpenUri(uri, "Open Nexus page failed");
+    }
+
+    private void OpenUri(string uri, string title)
+    {
         try
         {
             Process.Start(new ProcessStartInfo(uri)
@@ -2099,50 +1631,270 @@ public partial class MainWindow : Window
             MessageBox.Show(
                 this,
                 $"Could not open the Nexus page automatically.\n\n{uri}\n\n{exception.Message}",
-                "Open Nexus page failed",
+                title,
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
         }
     }
 
-    private async Task<NexusUpdateCheckResult> CheckNexusUpdateWithDomainFallback(ModManifest manifest, string apiKey)
+    private async Task<NexusLinkCompletion> CompleteNexusSourceFromCatalogAsync(ModLibraryEntry entry)
     {
-        if (manifest.Source is null)
+        if (entry.Manifest.Source?.CanCheckUpdates != true)
         {
-            return await _nexusUpdateCheckService.CheckAsync(manifest, apiKey);
+            return new NexusLinkCompletion(entry.Manifest, null);
         }
 
-        NexusUpdateCheckResult? lastResult = null;
-        foreach (var domain in GetNexusGameDomainCandidates(manifest.Source.GameDomain))
+        try
         {
-            var result = await _nexusUpdateCheckService.CheckAsync(
-                manifest with { Source = manifest.Source with { GameDomain = domain } },
-                apiKey);
-            if (!IsNexusNotFound(result))
+            var catalogLoad = await _nexusMetadataCatalogService.LoadAsync(_managerPaths);
+            var match = _nexusMetadataMatcher.FindBestMatch(entry, catalogLoad.Entries);
+            if (match is null)
             {
-                return result;
+                return new NexusLinkCompletion(
+                    entry.Manifest,
+                    new NexusUpdateCheckResult(
+                        entry.Mod.Id,
+                        "Metadata missing",
+                        false,
+                        null,
+                        null,
+                        "The linked Nexus mod is not in the metadata catalog.",
+                        entry.Manifest.Source.GameDomain,
+                        entry.Manifest.Source.ModId));
             }
 
-            lastResult = result;
+            var (result, manifest) = CheckNexusUpdateWithMetadata(entry, match.Entry);
+            return new NexusLinkCompletion(ApplyNexusUpdateCheckResult(manifest, result), result);
         }
-
-        return lastResult ?? await _nexusUpdateCheckService.CheckAsync(manifest, apiKey);
+        catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException or TaskCanceledException or IOException)
+        {
+            return new NexusLinkCompletion(
+                entry.Manifest,
+                new NexusUpdateCheckResult(
+                    entry.Mod.Id,
+                    "Metadata error",
+                    false,
+                    null,
+                    null,
+                    exception.Message,
+                    entry.Manifest.Source.GameDomain,
+                    entry.Manifest.Source.ModId));
+        }
     }
 
-    private IReadOnlyList<string> GetNexusGameDomainCandidates(string? manifestDomain)
+    private (NexusUpdateCheckResult Result, ModManifest Manifest) CheckNexusUpdateWithMetadata(
+        ModLibraryEntry entry,
+        NexusMetadataCatalogEntry metadata)
     {
-        return new[]
+        var manifest = ApplyNexusSource(entry.Manifest, CreateNexusSourceFromMetadata(entry, metadata));
+        return (CheckNexusUpdateFromMetadata(manifest, metadata), manifest);
+    }
+
+    private ModSourceInfo CreateNexusSourceFromMetadata(
+        ModLibraryEntry entry,
+        NexusMetadataCatalogEntry metadata)
+    {
+        var archiveFileName = GetSourceArchiveFileName(entry);
+        var detectedVersion = ModSourceDetector.DetectVersion(archiveFileName);
+        var detectedSource = ModSourceDetector.Detect(archiveFileName, detectedVersion);
+        var downloadReference = metadata.DownloadReference;
+        var source = entry.Manifest.Source;
+        var gameDomain = FirstNonEmpty(
+            metadata.NexusGameDomain,
+            downloadReference?.GameDomain,
+            source?.GameDomain,
+            _settings.NexusGameDomain);
+        var modId = metadata.NexusModId
+            ?? downloadReference?.ModId
+            ?? source?.ModId
+            ?? detectedSource?.ModId;
+        var fileId = source?.FileId ?? detectedSource?.FileId;
+        var fileVersion = GetKnownModVersion(source?.FileVersion)
+            ?? GetKnownModVersion(detectedSource?.FileVersion)
+            ?? GetKnownModVersion(entry.Mod.Version)
+            ?? GetKnownModVersion(detectedVersion)
+            ?? GetKnownModVersion(metadata.BestVersion);
+
+        return new ModSourceInfo(
+            "NexusMods",
+            NormalizeNexusGameDomain(gameDomain),
+            modId,
+            fileId,
+            fileVersion,
+            source?.FileTimestamp ?? detectedSource?.FileTimestamp,
+            source?.SourceArchiveFileName ?? archiveFileName,
+            source?.LastUpdateStatus,
+            source?.LastLatestVersion,
+            source?.LastCheckedAt,
+            metadata.Name,
+            metadata.Author,
+            metadata.NexusPageUrl,
+            metadata.BestIconUrl,
+            metadata.Images,
+            metadata.Description,
+            metadata.Statistics?.Endorsements,
+            metadata.Statistics?.UniqueDownloads,
+            metadata.Statistics?.TotalDownloads,
+            metadata.Statistics?.TotalViews);
+    }
+
+    private NexusUpdateCheckResult CheckNexusUpdateFromMetadata(
+        ModManifest manifest,
+        NexusMetadataCatalogEntry metadata)
+    {
+        var source = manifest.Source;
+        if (source is null || source.ModId is null)
         {
-            _settings.NexusGameDomain,
-            manifestDomain,
-            "scavprototype",
-            "casualtiesunknowndemo",
-            "casualtiesunknown"
+            return new NexusUpdateCheckResult(manifest.Mod.Id, "Not linked", false, null, null, null);
         }
-        .Where(domain => !string.IsNullOrWhiteSpace(domain))
-        .Select(domain => domain!.Trim())
+
+        var downloadReference = metadata.DownloadReference;
+        var latestVersion = GetDisplayLatestVersion(metadata);
+        var latestFileId = downloadReference?.FileId;
+        var gameDomain = FirstNonEmpty(metadata.NexusGameDomain, downloadReference?.GameDomain, source.GameDomain);
+        var nexusModId = metadata.NexusModId ?? downloadReference?.ModId ?? source.ModId;
+        var isUpdateAvailable = IsCatalogUpdateAvailable(source, latestVersion, latestFileId, metadata);
+        return new NexusUpdateCheckResult(
+            manifest.Mod.Id,
+            isUpdateAvailable ? "Update available" : "Latest version",
+            isUpdateAvailable,
+            latestVersion,
+            latestFileId,
+            null,
+            gameDomain,
+            nexusModId,
+            metadata.Name);
+    }
+
+    private static bool IsCatalogUpdateAvailable(
+        ModSourceInfo source,
+        string? latestVersion,
+        int? latestFileId,
+        NexusMetadataCatalogEntry metadata)
+    {
+        var localVersion = GetKnownModVersion(source.FileVersion);
+        if (source.FileId is not null && latestFileId is not null && source.FileId.Value == latestFileId.Value)
+        {
+            return false;
+        }
+
+        if (source.FileId is not null && latestFileId is not null && source.FileId.Value > latestFileId.Value)
+        {
+            return false;
+        }
+
+        var catalogVersions = GetCatalogComparableVersions(metadata).ToArray();
+        if (!string.IsNullOrWhiteSpace(localVersion)
+            && catalogVersions.Any(version => VersionsEqual(localVersion, version)))
+        {
+            return false;
+        }
+
+        if (source.FileId is not null && !string.IsNullOrWhiteSpace(latestVersion)
+            && source.FileId.Value.ToString().Equals(TrimSimpleVersion(latestVersion), StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(localVersion) && catalogVersions.Length > 0)
+        {
+            return catalogVersions
+                .Select(version => CompareSemanticVersions(localVersion, version))
+                .Where(comparison => comparison is not null)
+                .Any(comparison => comparison < 0);
+        }
+
+        if (source.FileId is not null && latestFileId is not null)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string? GetDisplayLatestVersion(NexusMetadataCatalogEntry metadata)
+    {
+        return GetKnownModVersion(metadata.BestVersion)
+            ?? GetCatalogComparableVersions(metadata).FirstOrDefault();
+    }
+
+    private static IEnumerable<string> GetCatalogComparableVersions(NexusMetadataCatalogEntry metadata)
+    {
+        var pluginVersions = new[]
+        {
+            metadata.BepInExVersion,
+            metadata.DllVersion
+        }
+        .Concat(metadata.DllVersions.Values)
+        .Select(GetKnownModVersion)
+        .Where(version => !string.IsNullOrWhiteSpace(version))
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToArray();
+
+        foreach (var version in pluginVersions)
+        {
+            yield return version!;
+        }
+
+        var pageVersion = GetKnownModVersion(metadata.Version);
+        if (pageVersion is null)
+        {
+            yield break;
+        }
+
+        if (pluginVersions.Length == 0
+            || pluginVersions.Any(version => VersionsEqual(version!, pageVersion))
+            || !LooksLikeSimpleVersionCounter(pageVersion))
+        {
+            yield return pageVersion;
+        }
+    }
+
+    private static int? CompareSemanticVersions(string first, string second)
+    {
+        var firstParts = ParseSemanticVersionParts(first);
+        var secondParts = ParseSemanticVersionParts(second);
+        if (firstParts.Length == 0 || secondParts.Length == 0)
+        {
+            return null;
+        }
+
+        var maxLength = Math.Max(firstParts.Length, secondParts.Length);
+        for (var index = 0; index < maxLength; index++)
+        {
+            var left = index < firstParts.Length ? firstParts[index] : 0;
+            var right = index < secondParts.Length ? secondParts[index] : 0;
+            if (left != right)
+            {
+                return left.CompareTo(right);
+            }
+        }
+
+        return 0;
+    }
+
+    private static int[] ParseSemanticVersionParts(string version)
+    {
+        var value = NormalizeComparableVersion(version);
+        return value
+            .Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(part => int.TryParse(part, out var parsed) ? parsed : (int?)null)
+            .TakeWhile(part => part is not null)
+            .Select(part => part!.Value)
+            .ToArray();
+    }
+
+    private static bool LooksLikeSimpleVersionCounter(string version)
+    {
+        return int.TryParse(TrimSimpleVersion(version), out _);
+    }
+
+    private static string TrimSimpleVersion(string version)
+    {
+        var value = version.Trim();
+        return value.StartsWith('v') || value.StartsWith('V')
+            ? value[1..]
+            : value;
     }
 
     private static bool ShouldResetNexusGameDomain(string? domain)
@@ -2150,12 +1902,6 @@ public partial class MainWindow : Window
         return string.IsNullOrWhiteSpace(domain)
             || domain.Equals("casualtiesunknowndemo", StringComparison.OrdinalIgnoreCase)
             || domain.Equals("casualtiesunknown", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsNexusNotFound(NexusUpdateCheckResult result)
-    {
-        return result.ErrorMessage?.Contains("404", StringComparison.OrdinalIgnoreCase) == true
-            || result.ErrorMessage?.Contains("Not Found", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private string GetModName(string modId)
@@ -2168,7 +1914,9 @@ public partial class MainWindow : Window
     {
         if (!string.IsNullOrWhiteSpace(result.ErrorMessage))
         {
-            return "API error";
+            return result.Status.Contains("Metadata", StringComparison.OrdinalIgnoreCase)
+                ? result.Status
+                : "API error";
         }
 
         if (result.IsUpdateAvailable)
@@ -2581,6 +2329,15 @@ public partial class MainWindow : Window
         {
             SelectedModNameText.Text = "No mod selected";
             SelectedModIdText.Text = string.Empty;
+            SelectedModAuthorText.Text = string.Empty;
+            SelectedModNexusText.Text = string.Empty;
+            OpenSelectedModNexusButton.IsEnabled = false;
+            SelectedModImage.Source = null;
+            SelectedModLargeImage.Source = null;
+            SelectedNexusVersionText.Text = string.Empty;
+            SelectedNexusDownloadsText.Text = string.Empty;
+            SelectedNexusStatsText.Text = string.Empty;
+            SelectedNexusDescriptionText.Text = string.Empty;
             SelectedFileCountText.Text = "0";
             SelectedPluginCountText.Text = "0";
             SelectedContentCountText.Text = "0";
@@ -2592,12 +2349,141 @@ public partial class MainWindow : Window
 
         SelectedModNameText.Text = selectedMod.Name;
         SelectedModIdText.Text = $"{selectedMod.Id} - version {selectedMod.Version} - {selectedMod.SourceStatus} - {(selectedMod.IsEnabled ? "enabled" : "disabled")} - order {selectedMod.Priority}";
+        SelectedModAuthorText.Text = string.IsNullOrWhiteSpace(selectedMod.Author)
+            ? string.Empty
+            : $"Author: {selectedMod.Author}";
+        SelectedModNexusText.Text = string.IsNullOrWhiteSpace(selectedMod.PageUrl)
+            ? string.Empty
+            : selectedMod.PageUrl;
+        OpenSelectedModNexusButton.IsEnabled = !string.IsNullOrWhiteSpace(selectedMod.PageUrl);
+        SetSelectedModImages(selectedMod.IconUrl, selectedMod.LargeImageUrl);
+        SelectedNexusVersionText.Text = string.IsNullOrWhiteSpace(selectedMod.NexusVersion)
+            ? "unknown"
+            : selectedMod.NexusVersion;
+        SelectedNexusDownloadsText.Text = FormatNullableCount(selectedMod.TotalDownloads);
+        SelectedNexusStatsText.Text = BuildNexusStatsText(selectedMod);
+        SelectedNexusDescriptionText.Text = CleanNexusDescription(selectedMod.Description);
         SelectedFileCountText.Text = selectedMod.FileCount.ToString();
         SelectedPluginCountText.Text = selectedMod.PluginCount.ToString();
         SelectedContentCountText.Text = selectedMod.ContentFileCount.ToString();
         SelectedWarningCountText.Text = selectedMod.WarningCount.ToString();
         DependenciesListView.ItemsSource = selectedMod.Dependencies;
         WarningsListBox.ItemsSource = selectedMod.Warnings;
+    }
+
+    private void OpenSelectedModNexus_Click(object sender, RoutedEventArgs e)
+    {
+        if (ModsListView.SelectedItem is not ModRow selectedMod
+            || string.IsNullOrWhiteSpace(selectedMod.PageUrl))
+        {
+            return;
+        }
+
+        OpenUri(selectedMod.PageUrl, "Open Nexus page failed");
+    }
+
+    private void SetSelectedModImages(string? iconUrl, string? largeImageUrl)
+    {
+        var requestId = ++_selectedImageRequestId;
+        SelectedModImage.Source = null;
+        SelectedModLargeImage.Source = null;
+        _ = LoadSelectedModImageAsync(SelectedModImage, iconUrl, requestId);
+        _ = LoadSelectedModImageAsync(SelectedModLargeImage, largeImageUrl ?? iconUrl, requestId);
+    }
+
+    private async Task LoadSelectedModImageAsync(Image target, string? imageUrl, int requestId)
+    {
+        if (string.IsNullOrWhiteSpace(imageUrl)
+            || !Uri.TryCreate(imageUrl, UriKind.Absolute, out var uri))
+        {
+            return;
+        }
+
+        if (_imageCache.TryGetValue(uri.AbsoluteUri, out var cachedImage))
+        {
+            if (requestId == _selectedImageRequestId)
+            {
+                target.Source = cachedImage;
+            }
+
+            return;
+        }
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            request.Headers.UserAgent.Add(new ProductInfoHeaderValue("UCU-ModManager", "0.1"));
+            using var response = await _imageHttpClient.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+            await using var source = await response.Content.ReadAsStreamAsync();
+            using var memory = new MemoryStream();
+            await source.CopyToAsync(memory);
+            memory.Position = 0;
+
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.StreamSource = memory;
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+            image.EndInit();
+            image.Freeze();
+
+            _imageCache[uri.AbsoluteUri] = image;
+            if (requestId == _selectedImageRequestId)
+            {
+                target.Source = image;
+            }
+        }
+        catch (Exception exception) when (exception is NotSupportedException
+            or IOException
+            or InvalidOperationException
+            or HttpRequestException
+            or TaskCanceledException)
+        {
+            if (requestId == _selectedImageRequestId)
+            {
+                target.Source = null;
+            }
+        }
+    }
+
+    private static string BuildNexusStatsText(ModRow selectedMod)
+    {
+        var parts = new[]
+        {
+            $"Endorsements: {FormatNullableCount(selectedMod.Endorsements)}",
+            $"Unique downloads: {FormatNullableCount(selectedMod.UniqueDownloads)}",
+            $"Views: {FormatNullableCount(selectedMod.TotalViews)}"
+        };
+        return string.Join("   ", parts);
+    }
+
+    private static string FormatNullableCount(int? value)
+    {
+        return value is null
+            ? "unknown"
+            : value.Value.ToString("N0");
+    }
+
+    private static string CleanNexusDescription(string? description)
+    {
+        if (string.IsNullOrWhiteSpace(description))
+        {
+            return "No Nexus description is available.";
+        }
+
+        var text = WebUtility.HtmlDecode(description);
+        text = Regex.Replace(text, @"(?i)<br\s*/?>", "\n");
+        text = Regex.Replace(text, @"(?i)</p\s*>", "\n\n");
+        text = Regex.Replace(text, @"(?i)<[^>]+>", " ");
+        text = Regex.Replace(text, @"(?is)\[img\].*?\[/img\]", " ");
+        text = Regex.Replace(text, @"(?is)\[url=(?<url>[^\]]+)\](?<label>.*?)\[/url\]", "${label} (${url})");
+        text = Regex.Replace(text, @"(?is)\[/?(?:b|i|u|size|font|color|list|spoiler|heading|line|code)(?:=[^\]]*)?\]", " ");
+        text = Regex.Replace(text, @"(?is)\[\*\]|\[/\*\]", "- ");
+        text = Regex.Replace(text, @"[ \t]+\n", "\n");
+        text = Regex.Replace(text, @"\n{3,}", "\n\n");
+        text = Regex.Replace(text, @"[ \t]{2,}", " ");
+        return text.Trim();
     }
 
     private void RefreshSettingsStatus()
@@ -2931,6 +2817,16 @@ public partial class MainWindow : Window
         public required string Name { get; init; }
         public required string Version { get; init; }
         public required string SourceStatus { get; init; }
+        public required string Author { get; init; }
+        public required string? PageUrl { get; init; }
+        public required string? IconUrl { get; init; }
+        public required string? LargeImageUrl { get; init; }
+        public required string NexusVersion { get; init; }
+        public required string Description { get; init; }
+        public required int? Endorsements { get; init; }
+        public required int? UniqueDownloads { get; init; }
+        public required int? TotalDownloads { get; init; }
+        public required int? TotalViews { get; init; }
         public required int FileCount { get; init; }
         public required int PluginCount { get; init; }
         public required int ContentFileCount { get; init; }
@@ -2966,6 +2862,18 @@ public partial class MainWindow : Window
                 Name = entry.Mod.Name,
                 Version = string.IsNullOrWhiteSpace(entry.Mod.Version) ? "unknown" : entry.Mod.Version,
                 SourceStatus = BuildSourceStatus(entry.Manifest.Source),
+                Author = string.IsNullOrWhiteSpace(entry.Manifest.Source?.Author) ? string.Empty : entry.Manifest.Source.Author!,
+                PageUrl = entry.Manifest.Source?.PageUrl,
+                IconUrl = entry.Manifest.Source?.IconUrl,
+                LargeImageUrl = entry.Manifest.Source?.ImageUrls?.FirstOrDefault() ?? entry.Manifest.Source?.IconUrl,
+                NexusVersion = entry.Manifest.Source?.LastLatestVersion
+                    ?? entry.Manifest.Source?.FileVersion
+                    ?? entry.Mod.Version,
+                Description = entry.Manifest.Source?.Description ?? string.Empty,
+                Endorsements = entry.Manifest.Source?.Endorsements,
+                UniqueDownloads = entry.Manifest.Source?.UniqueDownloads,
+                TotalDownloads = entry.Manifest.Source?.TotalDownloads,
+                TotalViews = entry.Manifest.Source?.TotalViews,
                 FileCount = entry.FileCount,
                 PluginCount = entry.Mod.Files.Count(IsPluginDll),
                 ContentFileCount = entry.Mod.Files.Count(IsContentFile),
@@ -3093,28 +3001,46 @@ public partial class MainWindow : Window
         bool UsedApi,
         IReadOnlyList<string> Details);
 
-    private sealed record NexusAutoLinkDetection(
-        ModSourceInfo? Source,
-        bool WasSearchMatch,
-        string Description,
-        string? Error);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
 
-    private sealed record NexusSearchMatch(ModSourceInfo Source, string Title, int Score);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MinMaxInfo
+    {
+        public NativePoint Reserved;
+        public NativePoint MaxSize;
+        public NativePoint MaxPosition;
+        public NativePoint MinTrackSize;
+        public NativePoint MaxTrackSize;
+    }
 
-    private sealed record NexusSourceValidation(bool IsReliable, string Reason);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
 
-    private sealed record NexusFileEvidence(
-        bool IsReliable,
-        int Score,
-        int? FileId,
-        string? Version,
-        string Reason);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public NativeRect MonitorArea;
+        public NativeRect WorkArea;
+        public int Flags;
+    }
 
-    private sealed record KnownNexusLink(
-        string GameDomain,
-        int ModId,
-        IReadOnlyList<string> ModIdHints,
-        IReadOnlyList<string> Aliases);
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, int flags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo monitorInfo);
 
     private sealed record DependencyRow(string AssemblyName, string Status, string Providers)
     {
