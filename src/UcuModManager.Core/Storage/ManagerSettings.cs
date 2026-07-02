@@ -5,12 +5,14 @@ public sealed record ManagerSettings(
     string ActiveProfileId,
     string BepInExVersion,
     bool UseProfileSpecificBepInEx,
-    string NexusGameDomain = "scavprototype")
+    string NexusGameDomain = "scavprototype",
+    bool AutoLinkNexusOnStartup = true)
 {
     public static ManagerSettings Empty { get; } = new(
         string.Empty,
         "default",
         BepInEx.BepInExRelease.Current.Version,
         UseProfileSpecificBepInEx: true,
-        NexusGameDomain: "scavprototype");
+        NexusGameDomain: "scavprototype",
+        AutoLinkNexusOnStartup: true);
 }

@@ -144,7 +144,7 @@ public sealed class ModImportService
     private static void CopyEntryToModStorage(ZipArchiveEntry entry, string filesDirectoryPath, string targetRelativePath)
     {
         var destinationPath = Path.GetFullPath(Path.Combine(filesDirectoryPath, targetRelativePath.Replace('/', Path.DirectorySeparatorChar)));
-        var fullFilesDirectoryPath = Path.GetFullPath(filesDirectoryPath);
+        var fullFilesDirectoryPath = EnsureTrailingSeparator(Path.GetFullPath(filesDirectoryPath));
         if (!destinationPath.StartsWith(fullFilesDirectoryPath, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException($"Archive entry targets a path outside mod storage: {targetRelativePath}");
@@ -227,6 +227,13 @@ public sealed class ModImportService
     private static string NormalizeArchivePath(string path)
     {
         return path.Replace('\\', '/').TrimStart('/');
+    }
+
+    private static string EnsureTrailingSeparator(string path)
+    {
+        return path.EndsWith(Path.DirectorySeparatorChar)
+            ? path
+            : path + Path.DirectorySeparatorChar;
     }
 
     private static bool IsDirectory(string archivePath)

@@ -18,8 +18,9 @@ public sealed class ManagerSettingsService
                 return ManagerSettings.Empty;
             }
 
-            return Normalize(JsonSerializer.Deserialize<ManagerSettings>(File.ReadAllText(managerPaths.SettingsPath), JsonOptions)
-                ?? ManagerSettings.Empty);
+            var json = File.ReadAllText(managerPaths.SettingsPath);
+            return Normalize(JsonSerializer.Deserialize<ManagerSettings>(json, JsonOptions)
+                ?? ManagerSettings.Empty, json);
         }
         catch (JsonException)
         {
@@ -37,11 +38,22 @@ public sealed class ManagerSettingsService
         File.WriteAllText(managerPaths.SettingsPath, JsonSerializer.Serialize(settings, JsonOptions));
     }
 
-    private static ManagerSettings Normalize(ManagerSettings settings)
+    private static ManagerSettings Normalize(ManagerSettings settings, string? json = null)
     {
-        return ShouldResetNexusGameDomain(settings.NexusGameDomain)
+        var normalized = ShouldResetNexusGameDomain(settings.NexusGameDomain)
             ? settings with { NexusGameDomain = ManagerSettings.Empty.NexusGameDomain }
             : settings;
+        return json is not null && !HasJsonProperty(json, nameof(ManagerSettings.AutoLinkNexusOnStartup))
+            ? normalized with { AutoLinkNexusOnStartup = true }
+            : normalized;
+    }
+
+    private static bool HasJsonProperty(string json, string propertyName)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.ValueKind == JsonValueKind.Object
+            && document.RootElement.EnumerateObject()
+                .Any(property => property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool ShouldResetNexusGameDomain(string? domain)

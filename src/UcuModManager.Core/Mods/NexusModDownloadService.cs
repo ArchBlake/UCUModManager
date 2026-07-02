@@ -78,7 +78,7 @@ public sealed class NexusModDownloadService
 
         var fileName = GetFileName(response.Content.Headers.ContentDisposition, downloadUri, preferredFileName, fallbackFileName);
         var destinationPath = CreateUniqueDestinationPath(destinationDirectoryPath, fileName);
-        var fullDestinationDirectoryPath = Path.GetFullPath(destinationDirectoryPath);
+        var fullDestinationDirectoryPath = EnsureTrailingSeparator(Path.GetFullPath(destinationDirectoryPath));
         var fullDestinationPath = Path.GetFullPath(destinationPath);
         if (!fullDestinationPath.StartsWith(fullDestinationDirectoryPath, StringComparison.OrdinalIgnoreCase))
         {
@@ -199,6 +199,13 @@ public sealed class NexusModDownloadService
             .ToArray())
             .Trim();
         return string.IsNullOrWhiteSpace(cleaned) ? null : cleaned;
+    }
+
+    private static string EnsureTrailingSeparator(string path)
+    {
+        return path.EndsWith(Path.DirectorySeparatorChar)
+            ? path
+            : path + Path.DirectorySeparatorChar;
     }
 
     private static string BuildFallbackFileName(string gameDomain, int modId, int fileId)

@@ -192,7 +192,7 @@ public sealed class ProfileService
         for (var index = 0; index < orderedModIds.Count; index++)
         {
             var modId = orderedModIds[index];
-            var isEnabled = !existingByModId.TryGetValue(modId, out var existingEntry) || existingEntry.IsEnabled;
+            var isEnabled = existingByModId.TryGetValue(modId, out var existingEntry) && existingEntry.IsEnabled;
             synchronizedEntries.Add(new ProfileModEntry(modId, isEnabled, index));
         }
 

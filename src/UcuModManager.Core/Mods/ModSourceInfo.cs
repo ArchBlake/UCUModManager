@@ -20,7 +20,8 @@ public sealed record ModSourceInfo(
     int? Endorsements = null,
     int? UniqueDownloads = null,
     int? TotalDownloads = null,
-    int? TotalViews = null)
+    int? TotalViews = null,
+    int? LastLatestFileId = null)
 {
     public bool CanCheckUpdates => Provider.Equals("NexusMods", StringComparison.OrdinalIgnoreCase)
         && !string.IsNullOrWhiteSpace(GameDomain)
