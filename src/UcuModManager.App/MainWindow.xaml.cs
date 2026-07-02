@@ -1338,9 +1338,10 @@ public partial class MainWindow : Window
     {
         var latestVersion = GetKnownModVersion(result.LatestVersion);
         var currentVersion = GetKnownModVersion(source.FileVersion);
+        var archiveVersion = GetKnownModVersion(ModSourceDetector.DetectVersion(source.SourceArchiveFileName));
         if (string.IsNullOrWhiteSpace(latestVersion))
         {
-            return currentVersion;
+            return currentVersion ?? archiveVersion;
         }
 
         if (source.FileId is not null
@@ -1354,7 +1355,26 @@ public partial class MainWindow : Window
             return latestVersion;
         }
 
-        return currentVersion ?? latestVersion;
+        if (!string.IsNullOrWhiteSpace(archiveVersion) && VersionsEqual(archiveVersion, latestVersion))
+        {
+            return latestVersion;
+        }
+
+        if (!string.IsNullOrWhiteSpace(archiveVersion)
+            && CompareSemanticVersions(archiveVersion, latestVersion) is int archiveComparison
+            && archiveComparison >= 0)
+        {
+            return archiveVersion;
+        }
+
+        if (!string.IsNullOrWhiteSpace(currentVersion)
+            && CompareSemanticVersions(currentVersion, latestVersion) is int currentComparison
+            && currentComparison >= 0)
+        {
+            return currentVersion;
+        }
+
+        return currentVersion ?? archiveVersion ?? latestVersion;
     }
 
     private static ModManifest ApplyNexusSource(ModManifest manifest, ModSourceInfo source)
@@ -2054,8 +2074,7 @@ public partial class MainWindow : Window
             }
         }
 
-        return candidates.FirstOrDefault(file => file.IsPrimary)
-            ?? candidates.OrderByDescending(file => file.UploadedAt).FirstOrDefault();
+        return ChooseLatestUpdateFile(candidates);
     }
 
     private ModSourceInfo CreateNexusCatalogSource(
@@ -3495,6 +3514,7 @@ public partial class MainWindow : Window
 
         var catalogLoad = await _nexusMetadataCatalogService.LoadAsync(_managerPaths);
         var results = new List<NexusUpdateCheckResult>();
+        var manifestsByModId = new Dictionary<string, ModManifest>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in checkableEntries)
         {
             var match = _nexusMetadataMatcher.FindBestMatch(entry, catalogLoad.Entries);
@@ -3511,72 +3531,116 @@ public partial class MainWindow : Window
                     entry.Manifest)
                 : CheckNexusUpdateWithMetadata(entry, match.Entry);
             results.Add(result);
+            manifestsByModId[entry.Mod.Id] = manifest;
             PersistNexusUpdateCheck(entry, result, manifest);
-            var row = _mods.FirstOrDefault(mod => mod.Id.Equals(result.ModId, StringComparison.OrdinalIgnoreCase));
-            if (row is not null)
-            {
-                row.UpdateStatus = BuildUpdateStatusText(result);
-                row.LatestVersion = result.LatestVersion ?? string.Empty;
-                row.NexusVersion = result.LatestVersion ?? row.NexusVersion;
-                row.LatestNexusFileId = result.LatestFileId;
-                row.LatestNexusFileName = result.LatestFileName ?? row.LatestNexusFileName;
-            }
+            ApplyUpdateResultToRow(result);
         }
 
         ModsListView.Items.Refresh();
-        await WarmNexusFilesCacheAsync(results);
-        return results;
+        return await ConfirmNexusUpdateResultsWithFilesAsync(checkableEntries, results, manifestsByModId);
     }
 
-    private async Task WarmNexusFilesCacheAsync(IReadOnlyList<NexusUpdateCheckResult> results)
+    private async Task<IReadOnlyList<NexusUpdateCheckResult>> ConfirmNexusUpdateResultsWithFilesAsync(
+        IReadOnlyList<ModLibraryEntry> entries,
+        IReadOnlyList<NexusUpdateCheckResult> results,
+        IReadOnlyDictionary<string, ModManifest> manifestsByModId)
     {
         _lastNexusFilesCacheSummary = null;
+        var entriesById = entries.ToDictionary(entry => entry.Mod.Id, StringComparer.OrdinalIgnoreCase);
         var candidates = results
             .Where(result => result.NexusModId is not null)
             .Where(result => !string.IsNullOrWhiteSpace(result.GameDomain))
+            .Where(result =>
+                entriesById.TryGetValue(result.ModId, out var entry)
+                && NeedsNexusFilesConfirmation(
+                    manifestsByModId.TryGetValue(result.ModId, out var manifest) ? manifest : entry.Manifest,
+                    result))
             .ToArray();
         if (candidates.Length == 0)
         {
-            return;
+            return results;
         }
 
         var apiKey = GetConfiguredNexusApiKey();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            _lastNexusFilesCacheSummary = "Nexus files: API key is not configured, cached file lists were not refreshed.";
-            return;
-        }
-
+        var confirmedResults = results.ToArray();
         var cached = 0;
         var refreshed = 0;
         var failed = 0;
+        var corrected = 0;
         foreach (var result in candidates)
         {
-            var fingerprint = BuildNexusFilesFingerprint(result.GameDomain!, result.NexusModId!.Value, result);
-            if (_nexusModFilesService.HasCachedFiles(_managerPaths, result.GameDomain!, result.NexusModId!.Value, fingerprint))
+            if (!entriesById.TryGetValue(result.ModId, out var entry))
             {
-                cached++;
                 continue;
             }
 
+            var manifest = manifestsByModId.TryGetValue(result.ModId, out var savedManifest)
+                ? savedManifest
+                : entry.Manifest;
             var row = _mods.FirstOrDefault(mod => mod.Id.Equals(result.ModId, StringComparison.OrdinalIgnoreCase));
             var previousStatus = row?.UpdateStatus;
+            NexusModFilesLoadResult? filesResult = null;
+            var fingerprint = BuildNexusFilesFingerprint(result.GameDomain!, result.NexusModId!.Value, result);
             if (row is not null)
             {
-                row.UpdateStatus = "Caching files...";
+                row.UpdateStatus = "Verifying files...";
                 ModsListView.Items.Refresh();
             }
 
             try
             {
-                await _nexusModFilesService.LoadOrRefreshAsync(
+                filesResult = _nexusModFilesService.TryLoadAnyCached(
                     _managerPaths,
                     result.GameDomain!,
-                    result.NexusModId!.Value,
-                    fingerprint,
-                    apiKey,
-                    forceRefresh: true);
-                refreshed++;
+                    result.NexusModId!.Value);
+                if (filesResult is not null)
+                {
+                    cached++;
+                }
+                else if (string.IsNullOrWhiteSpace(apiKey))
+                {
+                    failed++;
+                }
+                else
+                {
+                    filesResult = await _nexusModFilesService.LoadOrRefreshAsync(
+                        _managerPaths,
+                        result.GameDomain!,
+                        result.NexusModId!.Value,
+                        fingerprint,
+                        apiKey,
+                        forceRefresh: false);
+                    if (filesResult.IsFromCache)
+                    {
+                        cached++;
+                    }
+                    else
+                    {
+                        refreshed++;
+                    }
+                }
+
+                if (filesResult is null)
+                {
+                    continue;
+                }
+
+                var confirmed = ConfirmNexusUpdateWithFiles(manifest, result, filesResult.Files);
+                var resultIndex = Array.FindIndex(
+                    confirmedResults,
+                    item => item.ModId.Equals(result.ModId, StringComparison.OrdinalIgnoreCase));
+                if (resultIndex >= 0)
+                {
+                    confirmedResults[resultIndex] = confirmed;
+                }
+
+                if (!confirmed.Equals(result))
+                {
+                    corrected++;
+                    PersistNexusUpdateCheck(entry, confirmed, manifest);
+                }
+
+                ApplyUpdateResultToRow(confirmed);
             }
             catch (Exception exception) when (exception is HttpRequestException
                 or TaskCanceledException
@@ -3589,7 +3653,7 @@ public partial class MainWindow : Window
             }
             finally
             {
-                if (row is not null)
+                if (row is not null && filesResult is null)
                 {
                     row.UpdateStatus = previousStatus ?? BuildUpdateStatusText(result);
                     ModsListView.Items.Refresh();
@@ -3597,8 +3661,25 @@ public partial class MainWindow : Window
             }
         }
 
-        _lastNexusFilesCacheSummary = $"Nexus files: {refreshed} refreshed, {cached} reused from cache, {failed} failed.";
+        _lastNexusFilesCacheSummary = $"Nexus files: {corrected} corrected, {cached} reused from cache, {refreshed} refreshed, {failed} skipped or failed.";
         ShowSelectedMod(ModsListView.SelectedItem as ModRow);
+        ModsListView.Items.Refresh();
+        return confirmedResults;
+    }
+
+    private void ApplyUpdateResultToRow(NexusUpdateCheckResult result)
+    {
+        var row = _mods.FirstOrDefault(mod => mod.Id.Equals(result.ModId, StringComparison.OrdinalIgnoreCase));
+        if (row is null)
+        {
+            return;
+        }
+
+        row.UpdateStatus = BuildUpdateStatusText(result);
+        row.LatestVersion = result.LatestVersion ?? string.Empty;
+        row.NexusVersion = result.LatestVersion ?? row.NexusVersion;
+        row.LatestNexusFileId = result.LatestFileId;
+        row.LatestNexusFileName = result.LatestFileName ?? row.LatestNexusFileName;
     }
 
     private void PersistNexusUpdateCheck(ModLibraryEntry entry, NexusUpdateCheckResult result, ModManifest manifest)
@@ -3928,7 +4009,7 @@ public partial class MainWindow : Window
         var latestFileId = downloadReference?.FileId;
         var gameDomain = FirstNonEmpty(metadata.NexusGameDomain, downloadReference?.GameDomain, source.GameDomain);
         var nexusModId = metadata.NexusModId ?? downloadReference?.ModId ?? source.ModId;
-        var isUpdateAvailable = IsCatalogUpdateAvailable(source, latestVersion, latestFileId, metadata);
+        var isUpdateAvailable = IsCatalogUpdateAvailable(manifest, source, latestVersion, latestFileId, metadata);
         return new NexusUpdateCheckResult(
             manifest.Mod.Id,
             isUpdateAvailable ? "Update available" : "Latest version",
@@ -3942,12 +4023,12 @@ public partial class MainWindow : Window
     }
 
     private static bool IsCatalogUpdateAvailable(
+        ModManifest manifest,
         ModSourceInfo source,
         string? latestVersion,
         int? latestFileId,
         NexusMetadataCatalogEntry metadata)
     {
-        var localVersion = GetKnownModVersion(source.FileVersion);
         if (source.FileId is not null && latestFileId is not null && source.FileId.Value == latestFileId.Value)
         {
             return false;
@@ -3958,9 +4039,11 @@ public partial class MainWindow : Window
             return false;
         }
 
+        var installedVersions = GetInstalledComparableVersions(manifest);
         var catalogVersions = GetCatalogComparableVersions(metadata).ToArray();
-        if (!string.IsNullOrWhiteSpace(localVersion)
-            && catalogVersions.Any(version => VersionsEqual(localVersion, version)))
+        if (installedVersions.Any(installedVersion =>
+            !string.IsNullOrWhiteSpace(latestVersion) && VersionsEqual(installedVersion, latestVersion)
+            || catalogVersions.Any(catalogVersion => VersionsEqual(installedVersion, catalogVersion))))
         {
             return false;
         }
@@ -3971,12 +4054,23 @@ public partial class MainWindow : Window
             return false;
         }
 
-        if (!string.IsNullOrWhiteSpace(localVersion) && catalogVersions.Length > 0)
+        if (installedVersions.Count > 0 && catalogVersions.Length > 0)
         {
-            return catalogVersions
-                .Select(version => CompareSemanticVersions(localVersion, version))
+            var comparisons = installedVersions
+                .SelectMany(installedVersion => catalogVersions
+                    .Select(catalogVersion => CompareSemanticVersions(installedVersion, catalogVersion)))
                 .Where(comparison => comparison is not null)
-                .Any(comparison => comparison < 0);
+                .Select(comparison => comparison!.Value)
+                .ToArray();
+            if (comparisons.Any(comparison => comparison >= 0))
+            {
+                return false;
+            }
+
+            if (comparisons.Any(comparison => comparison < 0))
+            {
+                return true;
+            }
         }
 
         if (source.FileId is not null && latestFileId is not null)
@@ -3985,6 +4079,125 @@ public partial class MainWindow : Window
         }
 
         return false;
+    }
+
+    private static bool NeedsNexusFilesConfirmation(ModManifest manifest, NexusUpdateCheckResult result)
+    {
+        if (result.NexusModId is null || string.IsNullOrWhiteSpace(result.GameDomain))
+        {
+            return false;
+        }
+
+        if (result.IsUpdateAvailable)
+        {
+            return true;
+        }
+
+        var latestVersion = GetKnownModVersion(result.LatestVersion);
+        if (string.IsNullOrWhiteSpace(latestVersion))
+        {
+            return false;
+        }
+
+        return GetInstalledComparableVersions(manifest)
+            .Select(installedVersion => CompareSemanticVersions(installedVersion, latestVersion))
+            .Any(comparison => comparison > 0);
+    }
+
+    private static NexusUpdateCheckResult ConfirmNexusUpdateWithFiles(
+        ModManifest manifest,
+        NexusUpdateCheckResult result,
+        IReadOnlyList<NexusModFileInfo> files)
+    {
+        var latestFile = ChooseLatestUpdateFile(files);
+        if (latestFile is null)
+        {
+            return result;
+        }
+
+        var latestVersion = GetKnownModVersion(latestFile.Version);
+        var confirmed = result with
+        {
+            LatestVersion = latestVersion ?? result.LatestVersion,
+            LatestFileId = latestFile.FileId,
+            LatestFileName = latestFile.FileName
+        };
+
+        var installedVersions = GetInstalledComparableVersions(manifest);
+        var sourceFileId = manifest.Source?.FileId;
+        var matchesLatestFileId = sourceFileId is not null && sourceFileId.Value == latestFile.FileId;
+        var localFileIdLooksNewer = sourceFileId is not null && sourceFileId.Value > latestFile.FileId;
+        var matchesLatestVersion = !string.IsNullOrWhiteSpace(latestVersion)
+            && installedVersions.Any(installedVersion => VersionIsSameOrNewer(installedVersion, latestVersion));
+
+        return matchesLatestFileId || localFileIdLooksNewer || matchesLatestVersion
+            ? confirmed with
+            {
+                Status = "Latest version",
+                IsUpdateAvailable = false,
+                ErrorMessage = null
+            }
+            : confirmed;
+    }
+
+    private static NexusModFileInfo? ChooseLatestUpdateFile(IReadOnlyList<NexusModFileInfo> files)
+    {
+        if (files.Count == 0)
+        {
+            return null;
+        }
+
+        var currentFiles = files
+            .Where(file => !file.IsOldVersion)
+            .Where(file => !file.Category.Contains("old", StringComparison.OrdinalIgnoreCase))
+            .Where(file => !file.Category.Contains("archived", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var candidates = currentFiles.Length > 0
+            ? currentFiles
+            : files.Where(file => !file.IsOldVersion).ToArray();
+        if (candidates.Length == 0)
+        {
+            candidates = files.ToArray();
+        }
+
+        return candidates
+            .OrderByDescending(file => file.UploadedAt ?? DateTimeOffset.MinValue)
+            .ThenByDescending(file => file.IsPrimary)
+            .ThenByDescending(file => file.FileId)
+            .FirstOrDefault();
+    }
+
+    private static bool VersionIsSameOrNewer(string installedVersion, string latestVersion)
+    {
+        if (VersionsEqual(installedVersion, latestVersion))
+        {
+            return true;
+        }
+
+        return CompareSemanticVersions(installedVersion, latestVersion) is int comparison
+            && comparison >= 0;
+    }
+
+    private static IReadOnlyList<string> GetInstalledComparableVersions(ModManifest manifest)
+    {
+        var versions = new List<string>();
+        AddInstalledComparableVersion(versions, manifest.Source?.FileVersion);
+        AddInstalledComparableVersion(versions, manifest.Mod.Version);
+        AddInstalledComparableVersion(versions, ModSourceDetector.DetectVersion(manifest.SourceArchiveFileName));
+        AddInstalledComparableVersion(versions, ModSourceDetector.DetectVersion(manifest.Source?.SourceArchiveFileName ?? string.Empty));
+        return versions;
+    }
+
+    private static void AddInstalledComparableVersion(List<string> versions, string? version)
+    {
+        var knownVersion = GetKnownModVersion(version);
+        if (string.IsNullOrWhiteSpace(knownVersion)
+            || versions.Any(existingVersion => VersionsEqual(existingVersion, knownVersion)))
+        {
+            return;
+        }
+
+        versions.Add(knownVersion);
     }
 
     private static string? GetDisplayLatestVersion(NexusMetadataCatalogEntry metadata)

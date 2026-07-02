@@ -45,6 +45,22 @@ public static class ModSourceDetector
                 archiveFileName);
         }
 
+        var nexusGeneratedWithVersion = Regex.Match(
+            archiveName,
+            @"^(?<name>.+?)[ _-](?<modId>\d+)[ _-](?<version>v?\d+(?:[.-]\d+)*(?:-[A-Za-z][A-Za-z0-9.-]*)?)[ _-][A-Za-z0-9]{8,}$",
+            RegexOptions.IgnoreCase);
+        if (nexusGeneratedWithVersion.Success)
+        {
+            return new ModSourceInfo(
+                "NexusMods",
+                DefaultNexusGameDomain,
+                ParseInt(nexusGeneratedWithVersion.Groups["modId"].Value),
+                null,
+                NormalizeGeneratedVersion(nexusGeneratedWithVersion.Groups["version"].Value) ?? detectedVersion,
+                null,
+                archiveFileName);
+        }
+
         var nexusGeneratedSuffix = Regex.Match(
             archiveName,
             @"^(?<name>.+?)(?:[_-](?<fileId>\d+))?_[A-Za-z0-9]{8,}$",
@@ -67,6 +83,14 @@ public static class ModSourceDetector
     public static string? DetectVersion(string archivePath)
     {
         var name = Path.GetFileNameWithoutExtension(archivePath);
+
+        var nexusGeneratedVersion = Regex.Match(
+            name,
+            @"(?i)^.+?[ _-]\d+[ _-](?<version>v?\d+(?:[.-]\d+)*(?:-[A-Za-z][A-Za-z0-9.-]*)?)[ _-][A-Za-z0-9]{8,}$");
+        if (nexusGeneratedVersion.Success)
+        {
+            return NormalizeGeneratedVersion(nexusGeneratedVersion.Groups["version"].Value);
+        }
 
         var hyphenVersion = Regex.Match(name, @"(?i)(?:^|[-_])v(?<version>\d+(?:-\d+)+)(?:-for-\d+(?:[.-]\d+)*)?(?:[-_]|$)");
         if (hyphenVersion.Success)
@@ -114,6 +138,23 @@ public static class ModSourceDetector
         }
 
         value = value.Replace('-', '.');
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    private static string? NormalizeGeneratedVersion(string version)
+    {
+        var value = version.Trim();
+        if (value.StartsWith('v') || value.StartsWith('V'))
+        {
+            value = value[1..];
+        }
+
+        var forIndex = value.IndexOf("-for-", StringComparison.OrdinalIgnoreCase);
+        if (forIndex >= 0)
+        {
+            value = value[..forIndex];
+        }
+
         return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 

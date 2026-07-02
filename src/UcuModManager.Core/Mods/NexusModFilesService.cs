@@ -79,6 +79,51 @@ public sealed class NexusModFilesService
         }
     }
 
+    public NexusModFilesLoadResult? TryLoadAnyCached(
+        ManagerPaths managerPaths,
+        string gameDomain,
+        int modId)
+    {
+        var cacheDirectory = GetCacheDirectory(managerPaths, gameDomain);
+        if (!Directory.Exists(cacheDirectory))
+        {
+            return null;
+        }
+
+        foreach (var cachePath in Directory
+            .EnumerateFiles(cacheDirectory, $"{modId}-*.json", SearchOption.TopDirectoryOnly)
+            .OrderByDescending(File.GetLastWriteTimeUtc))
+        {
+            try
+            {
+                var document = JsonSerializer.Deserialize<NexusModFilesCacheDocument>(File.ReadAllText(cachePath), JsonOptions);
+                if (document is null
+                    || !document.GameDomain.Equals(gameDomain, StringComparison.OrdinalIgnoreCase)
+                    || document.ModId != modId)
+                {
+                    continue;
+                }
+
+                var result = new NexusModFilesLoadResult(
+                    document.GameDomain,
+                    document.ModId,
+                    document.CacheFingerprint,
+                    document.Files,
+                    document.CachedAt,
+                    true,
+                    null);
+                _memoryCache[BuildMemoryCacheKey(document.GameDomain, document.ModId, document.CacheFingerprint)] = result;
+                return result;
+            }
+            catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
+            {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
     public async Task<NexusModFilesLoadResult> LoadOrRefreshAsync(
         ManagerPaths managerPaths,
         string gameDomain,
@@ -264,10 +309,16 @@ public sealed class NexusModFilesService
         string cacheFingerprint)
     {
         return Path.Combine(
+            GetCacheDirectory(managerPaths, gameDomain),
+            $"{modId}-{SanitizePathSegment(cacheFingerprint)}.json");
+    }
+
+    private static string GetCacheDirectory(ManagerPaths managerPaths, string gameDomain)
+    {
+        return Path.Combine(
             managerPaths.CachePath,
             "nexus-files",
-            SanitizePathSegment(gameDomain),
-            $"{modId}-{SanitizePathSegment(cacheFingerprint)}.json");
+            SanitizePathSegment(gameDomain));
     }
 
     private static string BuildMemoryCacheKey(string gameDomain, int modId, string cacheFingerprint)
