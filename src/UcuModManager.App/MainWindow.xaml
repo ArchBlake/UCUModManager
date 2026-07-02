@@ -6,8 +6,8 @@
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         mc:Ignorable="d"
         Title="UCU ModManager"
-        Height="760"
-        Width="1320"
+        Height="840"
+        Width="1440"
         MinHeight="720"
         MinWidth="1220"
         WindowStyle="None"
@@ -21,9 +21,9 @@
         TextOptions.TextRenderingMode="ClearType">
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="42"
-                            ResizeBorderThickness="6"
+                            ResizeBorderThickness="7"
                             GlassFrameThickness="0"
-                            CornerRadius="0"
+                            CornerRadius="8"
                             UseAeroCaptionButtons="False" />
     </shell:WindowChrome.WindowChrome>
 
@@ -209,7 +209,7 @@
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="SelectionBrush" Value="{StaticResource AccentBrush}" />
             <Setter Property="CaretBrush" Value="{StaticResource PrimaryTextBrush}" />
-            <Setter Property="Padding" Value="9,5" />
+            <Setter Property="Padding" Value="9,3" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Template">
@@ -220,10 +220,13 @@
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
                                 CornerRadius="5"
+                                Padding="{TemplateBinding Padding}"
                                 SnapsToDevicePixels="True">
                             <ScrollViewer x:Name="PART_ContentHost"
-                                          Margin="{TemplateBinding Padding}"
-                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                                          Margin="0"
+                                          Focusable="False"
+                                          HorizontalScrollBarVisibility="Hidden"
+                                          VerticalScrollBarVisibility="Hidden" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsKeyboardFocusWithin" Value="True">
@@ -248,7 +251,7 @@
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="SelectionBrush" Value="{StaticResource AccentBrush}" />
             <Setter Property="CaretBrush" Value="{StaticResource PrimaryTextBrush}" />
-            <Setter Property="Padding" Value="9,5" />
+            <Setter Property="Padding" Value="9,3" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Template">
@@ -259,10 +262,13 @@
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
                                 CornerRadius="5"
+                                Padding="{TemplateBinding Padding}"
                                 SnapsToDevicePixels="True">
                             <ScrollViewer x:Name="PART_ContentHost"
-                                          Margin="{TemplateBinding Padding}"
-                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                                          Margin="0"
+                                          Focusable="False"
+                                          HorizontalScrollBarVisibility="Hidden"
+                                          VerticalScrollBarVisibility="Hidden" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsKeyboardFocusWithin" Value="True">
@@ -355,7 +361,7 @@
             <Setter Property="Background" Value="{StaticResource PanelAltBrush}" />
             <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
             <Setter Property="BorderBrush" Value="{StaticResource BorderBrushDark}" />
-            <Setter Property="Padding" Value="9,5" />
+            <Setter Property="Padding" Value="9,3" />
             <Setter Property="MinHeight" Value="30" />
             <Setter Property="MaxDropDownHeight" Value="280" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />

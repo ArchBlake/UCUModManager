@@ -30,6 +30,8 @@ public partial class MainWindow : Window
 {
     private const int WmGetMinMaxInfo = 0x0024;
     private const int MonitorDefaultToNearest = 0x00000002;
+    private const int DwmWindowCornerPreferenceAttribute = 33;
+    private const int DwmWindowCornerPreferenceRound = 2;
 
     private readonly ManagerSettingsService _settingsService = new();
     private readonly ModLibraryService _libraryService = new();
@@ -114,6 +116,7 @@ public partial class MainWindow : Window
     {
         var handle = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(handle)?.AddHook(WndProc);
+        EnableRoundedWindowCorners(handle);
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -152,6 +155,21 @@ public partial class MainWindow : Window
         minMaxInfo.MaxSize.X = Math.Abs(workArea.Right - workArea.Left);
         minMaxInfo.MaxSize.Y = Math.Abs(workArea.Bottom - workArea.Top);
         Marshal.StructureToPtr(minMaxInfo, lParam, false);
+    }
+
+    private static void EnableRoundedWindowCorners(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var cornerPreference = DwmWindowCornerPreferenceRound;
+        _ = DwmSetWindowAttribute(
+            hwnd,
+            DwmWindowCornerPreferenceAttribute,
+            ref cornerPreference,
+            Marshal.SizeOf<int>());
     }
 
     private void Refresh_Click(object sender, RoutedEventArgs e)
@@ -5693,6 +5711,13 @@ public partial class MainWindow : Window
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo monitorInfo);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(
+        IntPtr hwnd,
+        int attribute,
+        ref int attributeValue,
+        int attributeSize);
 
     private sealed record DependencyRow(string AssemblyName, string Status, string Providers)
     {
