@@ -674,10 +674,17 @@
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="0,0,1,1"
                                 SnapsToDevicePixels="True">
-                            <ContentPresenter Margin="{TemplateBinding Padding}"
-                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                              VerticalAlignment="Center"
-                                              RecognizesAccessKey="True" />
+                            <Grid>
+                                <ContentPresenter Margin="{TemplateBinding Padding}"
+                                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                  VerticalAlignment="Center"
+                                                  RecognizesAccessKey="True" />
+                                <Thumb x:Name="PART_HeaderGripper"
+                                       Width="8"
+                                       HorizontalAlignment="Right"
+                                       Background="Transparent"
+                                       Cursor="SizeWE" />
+                            </Grid>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -685,6 +692,7 @@
                             </Trigger>
                             <Trigger Property="Role" Value="Padding">
                                 <Setter TargetName="HeaderBorder" Property="BorderThickness" Value="0,0,0,1" />
+                                <Setter TargetName="PART_HeaderGripper" Property="Visibility" Value="Collapsed" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -1058,23 +1066,23 @@
                         <ListView x:Name="ModsListView" Grid.Row="1" SelectionChanged="ModsListView_SelectionChanged">
                             <ListView.View>
                                 <GridView>
-                                    <GridViewColumn Header="On" Width="48">
+                                    <GridViewColumn Header="On" Width="52">
                                         <GridViewColumn.CellTemplate>
                                             <DataTemplate>
                                                 <CheckBox IsChecked="{Binding IsEnabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Click="EnabledCheckBox_Click" HorizontalAlignment="Center" />
                                             </DataTemplate>
                                         </GridViewColumn.CellTemplate>
                                     </GridViewColumn>
-                                    <GridViewColumn Header="Order" Width="54" DisplayMemberBinding="{Binding Priority}" />
-                                    <GridViewColumn Header="Mod" Width="160" DisplayMemberBinding="{Binding Name}" />
-                                    <GridViewColumn Header="Version" Width="76" DisplayMemberBinding="{Binding Version}" />
-                                    <GridViewColumn Header="Files" Width="54" DisplayMemberBinding="{Binding FileCount}" />
-                                    <GridViewColumn Header="Plugins" Width="64" DisplayMemberBinding="{Binding PluginCount}" />
-                                    <GridViewColumn Header="Content" Width="66" DisplayMemberBinding="{Binding ContentFileCount}" />
-                                    <GridViewColumn Header="Configs" Width="62" DisplayMemberBinding="{Binding ProfileConfigCount}" />
-                                    <GridViewColumn Header="Refs" Width="50" DisplayMemberBinding="{Binding DependencyStatus}" />
-                                    <GridViewColumn Header="Updates" Width="102" DisplayMemberBinding="{Binding UpdateStatus}" />
-                                    <GridViewColumn Header="Status" Width="86" DisplayMemberBinding="{Binding Status}" />
+                                    <GridViewColumn Header="Order" Width="66" DisplayMemberBinding="{Binding Priority}" />
+                                    <GridViewColumn Header="Mod" Width="190" DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="Version" Width="88" DisplayMemberBinding="{Binding Version}" />
+                                    <GridViewColumn Header="Files" Width="62" DisplayMemberBinding="{Binding FileCount}" />
+                                    <GridViewColumn Header="Plugins" Width="78" DisplayMemberBinding="{Binding PluginCount}" />
+                                    <GridViewColumn Header="Content" Width="82" DisplayMemberBinding="{Binding ContentFileCount}" />
+                                    <GridViewColumn Header="Configs" Width="80" DisplayMemberBinding="{Binding ProfileConfigCount}" />
+                                    <GridViewColumn Header="Refs" Width="64" DisplayMemberBinding="{Binding DependencyStatus}" />
+                                    <GridViewColumn Header="Updates" Width="118" DisplayMemberBinding="{Binding UpdateStatus}" />
+                                    <GridViewColumn Header="Status" Width="96" DisplayMemberBinding="{Binding Status}" />
                                 </GridView>
                             </ListView.View>
                         </ListView>
