@@ -159,6 +159,7 @@ public sealed class ModLibraryService
 
         return mod.AssemblyReferences
             .Where(reference => !reference.IsKnownGameOrFrameworkReference)
+            .Where(reference => !AssemblyReferenceClassifier.IsKnownGameOrFrameworkAssembly(reference.Name))
             .Where(reference => !ownAssemblyNames.Contains(reference.Name))
             .Select(reference => reference.Name)
             .Distinct(StringComparer.OrdinalIgnoreCase)

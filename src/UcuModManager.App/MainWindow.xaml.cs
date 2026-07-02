@@ -32,6 +32,9 @@ public partial class MainWindow : Window
     private const int MonitorDefaultToNearest = 0x00000002;
     private const int DwmWindowCornerPreferenceAttribute = 33;
     private const int DwmWindowCornerPreferenceRound = 2;
+    private const string SteamAppId = "4576510";
+    private const string SteamGameFolderName = "Casualties Unknown Demo";
+    private const int MinimumDependencyCandidateScore = 100;
 
     private readonly ManagerSettingsService _settingsService = new();
     private readonly ModLibraryService _libraryService = new();
@@ -93,6 +96,7 @@ public partial class MainWindow : Window
         ImportedUcuModpackListView.ItemsSource = _ucuModpackRows;
         SourceInitialized += MainWindow_SourceInitialized;
         Loaded += MainWindow_Loaded;
+        TryAutoConfigureGameFolder();
         RefreshSetupStatus();
         LoadMods();
         RefreshSettingsStatus();
@@ -180,12 +184,43 @@ public partial class MainWindow : Window
 
     private void ChooseGameFolder_Click(object sender, RoutedEventArgs e)
     {
+        var detectedGameRootPath = FindAutoDetectedGameRootPath();
+        if (!string.IsNullOrWhiteSpace(detectedGameRootPath)
+            && (string.IsNullOrWhiteSpace(_settings.GameRootPath) || !PathsEqual(detectedGameRootPath, _settings.GameRootPath)))
+        {
+            var answer = MessageBox.Show(
+                this,
+                $"Found Casualties Unknown Demo automatically:\n\n{detectedGameRootPath}\n\nYes: use this folder.\nNo: choose manually.\nCancel: keep current setting.",
+                "Game folder found",
+                MessageBoxButton.YesNoCancel,
+                MessageBoxImage.Information);
+            if (answer == MessageBoxResult.Yes)
+            {
+                SaveGameFolder(detectedGameRootPath);
+                return;
+            }
+
+            if (answer == MessageBoxResult.Cancel)
+            {
+                return;
+            }
+        }
+
+        ChooseGameFolderManually(detectedGameRootPath);
+    }
+
+    private void ChooseGameFolderManually(string? initialDirectory = null)
+    {
         var dialog = new OpenFolderDialog
         {
             Title = "Select Casualties Unknown Demo folder"
         };
 
-        if (!string.IsNullOrWhiteSpace(_settings.GameRootPath) && Directory.Exists(_settings.GameRootPath))
+        if (!string.IsNullOrWhiteSpace(initialDirectory) && Directory.Exists(initialDirectory))
+        {
+            dialog.InitialDirectory = initialDirectory;
+        }
+        else if (!string.IsNullOrWhiteSpace(_settings.GameRootPath) && Directory.Exists(_settings.GameRootPath))
         {
             dialog.InitialDirectory = _settings.GameRootPath;
         }
@@ -195,12 +230,249 @@ public partial class MainWindow : Window
             return;
         }
 
-        var validation = _gameValidator.Validate(dialog.FolderName);
+        SaveGameFolder(dialog.FolderName);
+    }
+
+    private void SaveGameFolder(string gameRootPath)
+    {
+        var validation = _gameValidator.Validate(gameRootPath);
         _settings = _settings with { GameRootPath = validation.GameRootPath };
         _settingsService.Save(_managerPaths, _settings);
 
         RefreshSetupStatus();
         RefreshProfileSummary();
+    }
+
+    private void TryAutoConfigureGameFolder()
+    {
+        if (!string.IsNullOrWhiteSpace(_settings.GameRootPath)
+            && _gameValidator.Validate(_settings.GameRootPath).IsValid)
+        {
+            return;
+        }
+
+        var detectedGameRootPath = FindAutoDetectedGameRootPath();
+        if (!string.IsNullOrWhiteSpace(detectedGameRootPath))
+        {
+            SaveGameFolder(detectedGameRootPath);
+        }
+    }
+
+    private string? FindAutoDetectedGameRootPath()
+    {
+        foreach (var candidatePath in EnumerateAutoGameFolderCandidates().Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var validation = _gameValidator.Validate(candidatePath);
+                if (validation.IsValid)
+                {
+                    return validation.GameRootPath;
+                }
+            }
+            catch (Exception exception) when (exception is ArgumentException
+                or NotSupportedException
+                or PathTooLongException
+                or IOException
+                or UnauthorizedAccessException)
+            {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> EnumerateAutoGameFolderCandidates()
+    {
+        foreach (var steamRootPath in EnumerateSteamRootPaths().Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (var libraryRootPath in EnumerateSteamLibraryRootPaths(steamRootPath).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                var steamAppsPath = Path.Combine(libraryRootPath, "steamapps");
+                var installDirectoryName = TryReadSteamInstallDirectoryName(steamAppsPath);
+                if (!string.IsNullOrWhiteSpace(installDirectoryName))
+                {
+                    yield return Path.Combine(steamAppsPath, "common", installDirectoryName);
+                }
+
+                yield return Path.Combine(steamAppsPath, "common", SteamGameFolderName);
+            }
+        }
+
+        foreach (var fallbackPath in EnumerateCommonSteamFallbackPaths())
+        {
+            yield return fallbackPath;
+        }
+    }
+
+    private static IEnumerable<string> EnumerateSteamRootPaths()
+    {
+        foreach (var registryPath in ReadSteamRootPathsFromRegistry())
+        {
+            yield return registryPath;
+        }
+
+        var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        if (!string.IsNullOrWhiteSpace(programFilesX86))
+        {
+            yield return Path.Combine(programFilesX86, "Steam");
+        }
+    }
+
+    private static IEnumerable<string> ReadSteamRootPathsFromRegistry()
+    {
+        foreach (var registryView in new[] { RegistryView.Default, RegistryView.Registry32, RegistryView.Registry64 })
+        {
+            foreach (var registryHive in new[] { RegistryHive.CurrentUser, RegistryHive.LocalMachine })
+            {
+                foreach (var subKeyName in new[] { @"Software\Valve\Steam", @"Software\WOW6432Node\Valve\Steam" })
+                {
+                    using var key = TryOpenRegistrySubKey(registryHive, registryView, subKeyName);
+                    if (key is null)
+                    {
+                        continue;
+                    }
+
+                    foreach (var valueName in new[] { "SteamPath", "InstallPath" })
+                    {
+                        var steamPath = NormalizeSteamPath(key.GetValue(valueName)?.ToString());
+                        if (!string.IsNullOrWhiteSpace(steamPath))
+                        {
+                            yield return steamPath;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static RegistryKey? TryOpenRegistrySubKey(
+        RegistryHive registryHive,
+        RegistryView registryView,
+        string subKeyName)
+    {
+        try
+        {
+            using var baseKey = RegistryKey.OpenBaseKey(registryHive, registryView);
+            return baseKey.OpenSubKey(subKeyName);
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or System.Security.SecurityException)
+        {
+            return null;
+        }
+    }
+
+    private static IEnumerable<string> EnumerateSteamLibraryRootPaths(string steamRootPath)
+    {
+        if (!Directory.Exists(steamRootPath))
+        {
+            yield break;
+        }
+
+        yield return steamRootPath;
+
+        var libraryFoldersPath = Path.Combine(steamRootPath, "steamapps", "libraryfolders.vdf");
+        if (!File.Exists(libraryFoldersPath))
+        {
+            yield break;
+        }
+
+        string[] lines;
+        try
+        {
+            lines = File.ReadAllLines(libraryFoldersPath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            yield break;
+        }
+
+        foreach (var line in lines)
+        {
+            var match = Regex.Match(line, "\"path\"\\s+\"(?<path>[^\"]+)\"", RegexOptions.IgnoreCase);
+            var libraryPath = match.Success
+                ? NormalizeSteamPath(match.Groups["path"].Value)
+                : null;
+            if (!string.IsNullOrWhiteSpace(libraryPath) && Directory.Exists(libraryPath))
+            {
+                yield return libraryPath;
+            }
+        }
+    }
+
+    private static string? TryReadSteamInstallDirectoryName(string steamAppsPath)
+    {
+        var appManifestPath = Path.Combine(steamAppsPath, $"appmanifest_{SteamAppId}.acf");
+        if (!File.Exists(appManifestPath))
+        {
+            return null;
+        }
+
+        string[] lines;
+        try
+        {
+            lines = File.ReadAllLines(appManifestPath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        foreach (var line in lines)
+        {
+            var match = Regex.Match(line, "\"installdir\"\\s+\"(?<name>[^\"]+)\"", RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                return match.Groups["name"].Value.Trim();
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> EnumerateCommonSteamFallbackPaths()
+    {
+        foreach (var driveRootPath in EnumerateReadyDriveRootPaths())
+        {
+            yield return Path.Combine(driveRootPath, "Steam", "steamapps", "common", SteamGameFolderName);
+            yield return Path.Combine(driveRootPath, "SteamLibrary", "steamapps", "common", SteamGameFolderName);
+        }
+    }
+
+    private static IEnumerable<string> EnumerateReadyDriveRootPaths()
+    {
+        foreach (var drive in DriveInfo.GetDrives())
+        {
+            bool isReady;
+            try
+            {
+                isReady = drive.IsReady;
+            }
+            catch (IOException)
+            {
+                continue;
+            }
+
+            if (isReady)
+            {
+                yield return drive.RootDirectory.FullName;
+            }
+        }
+    }
+
+    private static string? NormalizeSteamPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        return path.Trim()
+            .Replace(@"\\", @"\")
+            .Replace('/', Path.DirectorySeparatorChar);
     }
 
     private void ValidateGame_Click(object sender, RoutedEventArgs e)
@@ -301,25 +573,34 @@ public partial class MainWindow : Window
         var hasAutomaticAction = report.Issues.Any(issue => issue.InstalledProviders.Count > 0 || issue.Candidates.Count > 0);
         if (!hasAutomaticAction)
         {
-            MessageBox.Show(
+            var missingOnlyAnswer = MessageBox.ShowCustom(
                 this,
                 BuildMissingDependencyMessage(
                     report,
-                    "No Nexus metadata candidate was found for these DLLs.\n\nInstall the missing libraries manually, then install their archives with Install Mods before deploying."),
+                    "No reliable Nexus metadata candidate was found for these DLLs."),
                 "Missing dependencies",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return false;
+                MessageBoxImage.Warning,
+                new[]
+                {
+                    new DarkMessageBoxButton("Deploy Anyway", MessageBoxResult.Yes, Primary: true),
+                    new DarkMessageBoxButton("Cancel", MessageBoxResult.Cancel, IsCancel: true)
+                });
+            return missingOnlyAnswer == MessageBoxResult.Yes;
         }
 
-        var answer = MessageBox.Show(
+        var answer = MessageBox.ShowCustom(
             this,
             BuildMissingDependencyMessage(
                 report,
-                "Yes: enable installed providers and download remaining dependencies automatically.\nNo: open Nexus file pages for manual download.\nCancel: stop deployment.\n\nAutomatic Nexus downloads require a configured API key and may require Nexus Premium."),
+                "Automatic Nexus downloads require a configured API key and may require Nexus Premium."),
             "Missing dependencies",
-            MessageBoxButton.YesNoCancel,
-            MessageBoxImage.Warning);
+            MessageBoxImage.Warning,
+            new[]
+            {
+                new DarkMessageBoxButton("Fix Dependencies", MessageBoxResult.Yes, Primary: true),
+                new DarkMessageBoxButton("Deploy Anyway", MessageBoxResult.No),
+                new DarkMessageBoxButton("Cancel", MessageBoxResult.Cancel, IsCancel: true)
+            });
 
         if (answer == MessageBoxResult.Yes)
         {
@@ -329,7 +610,7 @@ public partial class MainWindow : Window
 
         if (answer == MessageBoxResult.No)
         {
-            OpenMissingDependencyCandidatePages(report);
+            return true;
         }
 
         return false;
@@ -397,6 +678,7 @@ public partial class MainWindow : Window
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var dependencyNames = entry.Mod.AssemblyReferences
                 .Where(reference => !reference.IsKnownGameOrFrameworkReference)
+                .Where(reference => !AssemblyReferenceClassifier.IsKnownGameOrFrameworkAssembly(reference.Name))
                 .Where(reference => !ownAssemblyNames.Contains(reference.Name))
                 .Select(reference => reference.Name)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -483,7 +765,7 @@ public partial class MainWindow : Window
                 Entry = entry,
                 Score = ScoreMissingDependencyCandidate(normalizedAssemblyName, entry)
             })
-            .Where(candidate => candidate.Score > 0)
+            .Where(candidate => candidate.Score >= MinimumDependencyCandidateScore)
             .GroupBy(candidate => BuildNexusCatalogEntryKey(candidate.Entry), StringComparer.OrdinalIgnoreCase)
             .Select(group => group
                 .OrderByDescending(candidate => candidate.Score)
@@ -511,8 +793,8 @@ public partial class MainWindow : Window
             score = Math.Max(score, ScoreDependencyCandidateName(normalizedAssemblyName, dllName, exactScore: 125, versionedScore: 105));
         }
 
-        score = Math.Max(score, ScoreDependencyCandidateName(normalizedAssemblyName, entry.Name, exactScore: 95, versionedScore: 75));
-        score = Math.Max(score, ScoreDependencyCandidateName(normalizedAssemblyName, entry.SourceName, exactScore: 75, versionedScore: 55));
+        score = Math.Max(score, ScoreDependencyCandidateName(normalizedAssemblyName, entry.Name, exactScore: 85, versionedScore: 60));
+        score = Math.Max(score, ScoreDependencyCandidateName(normalizedAssemblyName, entry.SourceName, exactScore: 70, versionedScore: 50));
         return score;
     }
 
@@ -4452,6 +4734,7 @@ public partial class MainWindow : Window
     {
         var dependencyNames = result.Manifest.Mod.AssemblyReferences
             .Where(reference => !reference.IsKnownGameOrFrameworkReference)
+            .Where(reference => !AssemblyReferenceClassifier.IsKnownGameOrFrameworkAssembly(reference.Name))
             .Select(reference => reference.Name)
             .Except(result.Manifest.Mod.Assemblies.Select(assembly => assembly.Name), StringComparer.OrdinalIgnoreCase)
             .Distinct(StringComparer.OrdinalIgnoreCase)

@@ -26,14 +26,25 @@ public static class DarkMessageBox
         return ShowCore(Application.Current.MainWindow, messageBoxText, caption, button, icon);
     }
 
+    public static MessageBoxResult ShowCustom(
+        Window owner,
+        string messageBoxText,
+        string caption,
+        MessageBoxImage icon,
+        IReadOnlyList<DarkMessageBoxButton> buttons)
+    {
+        return ShowCore(owner, messageBoxText, caption, MessageBoxButton.OK, icon, buttons);
+    }
+
     private static MessageBoxResult ShowCore(
         Window? owner,
         string messageBoxText,
         string caption,
         MessageBoxButton button,
-        MessageBoxImage icon)
+        MessageBoxImage icon,
+        IReadOnlyList<DarkMessageBoxButton>? customButtons = null)
     {
-        var dialog = new DarkMessageDialog(messageBoxText, caption, button, icon)
+        var dialog = new DarkMessageDialog(messageBoxText, caption, button, icon, customButtons)
         {
             Owner = owner?.IsVisible == true ? owner : null
         };
@@ -46,6 +57,7 @@ public static class DarkMessageBox
 public sealed class DarkMessageDialog : Window
 {
     private readonly MessageBoxButton _buttons;
+    private readonly IReadOnlyList<DarkMessageBoxButton>? _customButtons;
     private MessageBoxResult _result = MessageBoxResult.None;
     private Button? _defaultButton;
 
@@ -53,9 +65,11 @@ public sealed class DarkMessageDialog : Window
         string message,
         string caption,
         MessageBoxButton buttons,
-        MessageBoxImage icon)
+        MessageBoxImage icon,
+        IReadOnlyList<DarkMessageBoxButton>? customButtons = null)
     {
         _buttons = buttons;
+        _customButtons = customButtons;
         Title = caption;
         Width = 540;
         MinWidth = 440;
@@ -249,6 +263,11 @@ public sealed class DarkMessageDialog : Window
 
     private IEnumerable<(string Text, MessageBoxResult Result, bool Primary, bool IsCancel)> GetButtonDefinitions()
     {
+        if (_customButtons is not null)
+        {
+            return _customButtons.Select(button => (button.Text, button.Result, button.Primary, button.IsCancel));
+        }
+
         return _buttons switch
         {
             MessageBoxButton.OKCancel => new[]
@@ -342,6 +361,14 @@ public sealed class DarkMessageDialog : Window
 
     private MessageBoxResult GetCloseResult()
     {
+        if (_customButtons is not null)
+        {
+            return _customButtons.FirstOrDefault(button => button.IsCancel)?.Result
+                ?? _customButtons.FirstOrDefault(button => !button.Primary)?.Result
+                ?? _customButtons.FirstOrDefault()?.Result
+                ?? MessageBoxResult.None;
+        }
+
         return _buttons switch
         {
             MessageBoxButton.OK => MessageBoxResult.OK,
@@ -364,3 +391,9 @@ public sealed class DarkMessageDialog : Window
         return (SolidColorBrush)new BrushConverter().ConvertFromString(color)!;
     }
 }
+
+public sealed record DarkMessageBoxButton(
+    string Text,
+    MessageBoxResult Result,
+    bool Primary = false,
+    bool IsCancel = false);

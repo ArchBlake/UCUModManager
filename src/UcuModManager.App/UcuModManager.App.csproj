@@ -10,6 +10,14 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <AssemblyName>UCU ModManager</AssemblyName>
+    <Product>UCU ModManager</Product>
+    <ApplicationIcon>Assets\UCU.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="Assets\UCU.png" />
+    <Resource Include="Assets\UCU.png" />
+  </ItemGroup>
 
 </Project>

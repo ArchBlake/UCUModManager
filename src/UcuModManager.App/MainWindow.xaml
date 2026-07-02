@@ -6,6 +6,7 @@
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         mc:Ignorable="d"
         Title="UCU ModManager"
+        Icon="Assets/UCU.png"
         Height="840"
         Width="1440"
         MinHeight="720"

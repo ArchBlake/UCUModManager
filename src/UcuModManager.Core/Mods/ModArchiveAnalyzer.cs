@@ -255,7 +255,7 @@ public sealed class ModArchiveAnalyzer
                 {
                     var reference = metadata.GetAssemblyReference(handle);
                     var name = metadata.GetString(reference.Name);
-                    return new AssemblyReferenceInfo(sourcePath, name, reference.Version, IsKnownGameOrFrameworkAssembly(name));
+                    return new AssemblyReferenceInfo(sourcePath, name, reference.Version, AssemblyReferenceClassifier.IsKnownGameOrFrameworkAssembly(name));
                 })
                 .ToArray();
 
@@ -377,31 +377,6 @@ public sealed class ModArchiveAnalyzer
 
         var topLevelFolder = path[..slashIndex];
         return ModPackage.CreateStableId(topLevelFolder).Equals(ModPackage.CreateStableId(modName), StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsKnownGameOrFrameworkAssembly(string assemblyName)
-    {
-        if (assemblyName.StartsWith("System", StringComparison.OrdinalIgnoreCase)
-            || assemblyName.StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase)
-            || assemblyName.StartsWith("Unity", StringComparison.OrdinalIgnoreCase)
-            || assemblyName.StartsWith("Mono.", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return new[]
-        {
-            "mscorlib",
-            "netstandard",
-            "BepInEx",
-            "0Harmony",
-            "0Harmony20",
-            "HarmonyXInterop",
-            "MonoMod.Utils",
-            "Assembly-CSharp",
-            "DiscordRPC",
-            "Newtonsoft.Json"
-        }.Contains(assemblyName, StringComparer.OrdinalIgnoreCase);
     }
 
     private static string SuggestModName(string archivePath)
