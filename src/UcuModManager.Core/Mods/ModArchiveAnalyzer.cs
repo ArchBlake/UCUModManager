@@ -26,6 +26,7 @@ public sealed class ModArchiveAnalyzer
         var suggestedName = SuggestModName(archivePath);
         var suggestedVersion = ModSourceDetector.DetectVersion(archivePath);
         var source = ModSourceDetector.Detect(archivePath, suggestedVersion);
+        var pluginCompanionIds = DetectPluginCompanionIds(fileEntries, strippedRoot);
         var mappings = new List<ModFileMapping>();
         var assemblies = new List<AssemblyIdentityInfo>();
         var assemblyReferences = new List<AssemblyReferenceInfo>();
@@ -67,7 +68,7 @@ public sealed class ModArchiveAnalyzer
                 continue;
             }
 
-            var mapping = TryMapFile(normalizedSource, installPath, suggestedName, entry.UncompressedSize, warnings);
+            var mapping = TryMapFile(normalizedSource, installPath, suggestedName, pluginCompanionIds, entry.UncompressedSize, warnings);
             if (mapping is null)
             {
                 ignored.Add(new IgnoredArchiveEntry(normalizedSource, "Unknown target path; manual review is required."));
@@ -116,7 +117,13 @@ public sealed class ModArchiveAnalyzer
             warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
     }
 
-    private static ModFileMapping? TryMapFile(string sourcePath, string installPath, string modName, long size, List<string> warnings)
+    private static ModFileMapping? TryMapFile(
+        string sourcePath,
+        string installPath,
+        string modName,
+        IReadOnlySet<string> pluginCompanionIds,
+        long size,
+        List<string> warnings)
     {
         var path = installPath.Replace('\\', '/').TrimStart('/');
         var lower = path.ToLowerInvariant();
@@ -195,6 +202,17 @@ public sealed class ModArchiveAnalyzer
             return new ModFileMapping(sourcePath, $"BepInEx/{path}", ModTargetKind.BepInExTranslation, size);
         }
 
+        if (lower.StartsWith("managed/", StringComparison.Ordinal))
+        {
+            return new ModFileMapping(sourcePath, $"CasualtiesUnknown_Data/{path}", ModTargetKind.GameDataContent, size);
+        }
+
+        if (fileName.Equals("Assembly-CSharp.dll", StringComparison.OrdinalIgnoreCase))
+        {
+            warnings.Add("Archive contains Assembly-CSharp.dll. It will be virtualized into CasualtiesUnknown_Data/Managed because this is a game assembly replacement, not a BepInEx plugin.");
+            return new ModFileMapping(sourcePath, "CasualtiesUnknown_Data/Managed/Assembly-CSharp.dll", ModTargetKind.GameDataContent, size);
+        }
+
         if (IsRootFile(path) && extension.Equals(".dll", StringComparison.OrdinalIgnoreCase))
         {
             return new ModFileMapping(sourcePath, $"BepInEx/plugins/{fileName}", ModTargetKind.BepInExPlugin, size);
@@ -220,7 +238,18 @@ public sealed class ModArchiveAnalyzer
             return new ModFileMapping(sourcePath, $"BepInEx/plugins/{path}", ModTargetKind.BepInExPlugin, size);
         }
 
-        if (IsCompanionContentFolder(path, modName))
+        var knownPluginContentTarget = TryMapKnownPluginContent(path);
+        if (knownPluginContentTarget is not null)
+        {
+            return new ModFileMapping(sourcePath, knownPluginContentTarget, ModTargetKind.BepInExPlugin, size);
+        }
+
+        if (IsCompanionContentFolder(path, modName, pluginCompanionIds))
+        {
+            return new ModFileMapping(sourcePath, $"BepInEx/plugins/{path}", ModTargetKind.BepInExPlugin, size);
+        }
+
+        if (IsLikelyPluginContent(path, pluginCompanionIds))
         {
             return new ModFileMapping(sourcePath, $"BepInEx/plugins/{path}", ModTargetKind.BepInExPlugin, size);
         }
@@ -367,7 +396,17 @@ public sealed class ModArchiveAnalyzer
             || normalized.Equals("BepInEx/LogOutput.log", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsCompanionContentFolder(string path, string modName)
+    private static IReadOnlySet<string> DetectPluginCompanionIds(IReadOnlyList<ArchiveEntryInfo> entries, string? strippedRoot)
+    {
+        return entries
+            .Select(entry => StripRoot(entry.NormalizedPath, strippedRoot).Replace('\\', '/').TrimStart('/'))
+            .Where(path => Path.GetExtension(path).Equals(".dll", StringComparison.OrdinalIgnoreCase))
+            .Select(path => ModPackage.CreateStableId(Path.GetFileNameWithoutExtension(path)))
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCompanionContentFolder(string path, string modName, IReadOnlySet<string> pluginCompanionIds)
     {
         var slashIndex = path.IndexOf('/');
         if (slashIndex <= 0)
@@ -376,13 +415,188 @@ public sealed class ModArchiveAnalyzer
         }
 
         var topLevelFolder = path[..slashIndex];
-        return ModPackage.CreateStableId(topLevelFolder).Equals(ModPackage.CreateStableId(modName), StringComparison.OrdinalIgnoreCase);
+        var folderId = ModPackage.CreateStableId(topLevelFolder);
+        if (folderId.Equals(ModPackage.CreateStableId(modName), StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return pluginCompanionIds.Any(pluginId =>
+            folderId.Equals(pluginId, StringComparison.OrdinalIgnoreCase)
+            || pluginId.StartsWith(folderId + "-", StringComparison.OrdinalIgnoreCase)
+            || folderId.StartsWith(pluginId + "-", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string? TryMapKnownPluginContent(string path)
+    {
+        var normalized = path.Replace('\\', '/').TrimStart('/');
+        var topLevel = GetTopLevelSegment(normalized);
+        if (string.IsNullOrWhiteSpace(topLevel))
+        {
+            return null;
+        }
+
+        if (topLevel.Equals("recipes", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"BepInEx/plugins/CraftingFramework/{normalized}";
+        }
+
+        return IsKnownPluginContentTopLevel(topLevel)
+            ? $"BepInEx/plugins/{normalized}"
+            : null;
+    }
+
+    private static bool IsLikelyPluginContent(string path, IReadOnlySet<string> pluginCompanionIds)
+    {
+        var normalized = path.Replace('\\', '/').TrimStart('/');
+        var topLevel = GetTopLevelSegment(normalized);
+        if (string.IsNullOrWhiteSpace(topLevel)
+            || IsKnownNonPluginTopLevel(topLevel)
+            || IsLocalizationTopLevel(topLevel)
+            || IsDocumentationTopLevel(topLevel))
+        {
+            return false;
+        }
+
+        return IsRootFile(normalized)
+            ? pluginCompanionIds.Count > 0 && IsLoosePluginCompanionFile(normalized)
+            : pluginCompanionIds.Count > 0 || IsLikelyStandalonePluginContentFolder(topLevel);
+    }
+
+    private static string GetTopLevelSegment(string path)
+    {
+        var slashIndex = path.IndexOf('/');
+        return slashIndex < 0 ? path : path[..slashIndex];
+    }
+
+    private static bool IsLoosePluginCompanionFile(string path)
+    {
+        var fileName = Path.GetFileName(path);
+        if (IsPackageMetadataFile(fileName))
+        {
+            return false;
+        }
+
+        var extension = Path.GetExtension(path);
+        return new[]
+        {
+            ".asset",
+            ".assets",
+            ".bank",
+            ".bin",
+            ".bundle",
+            ".bytes",
+            ".csv",
+            ".dat",
+            ".json",
+            ".ogg",
+            ".png",
+            ".wav",
+            ".xml"
+        }.Contains(extension, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsPackageMetadataFile(string fileName)
+    {
+        return new[]
+        {
+            "icon.png",
+            "manifest.json",
+            "package.json",
+            "thunderstore.toml"
+        }.Contains(fileName, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsKnownNonPluginTopLevel(string topLevel)
+    {
+        return new[]
+        {
+            "BepInEx",
+            "CasualtiesUnknown.exe",
+            "CasualtiesUnknown_Data",
+            "Data",
+            "Managed",
+            "MonoBleedingEdge",
+            "config",
+            "custommusic",
+            "doorstop_config.ini",
+            "patchers",
+            "plugins",
+            "steam_appid.txt",
+            "winhttp.dll"
+        }.Contains(topLevel, PathComparer);
+    }
+
+    private static bool IsKnownPluginContentTopLevel(string topLevel)
+    {
+        return new[]
+        {
+            "Audio",
+            "AudioPacks",
+            "ChangeSkin",
+            "CraftingFramework",
+            "CustomSprites",
+            "Items",
+            "NewClothing",
+            "NewCloting",
+            "NewFirearms",
+            "NewGun",
+            "Pets",
+            "ResourcePack",
+            "Resources",
+            "Sounds"
+        }.Contains(topLevel, PathComparer);
+    }
+
+    private static bool IsLikelyStandalonePluginContentFolder(string topLevel)
+    {
+        return !IsPackageMetadataFile(topLevel)
+            && !IsKnownNonPluginTopLevel(topLevel)
+            && !IsLocalizationTopLevel(topLevel)
+            && !IsDocumentationTopLevel(topLevel);
+    }
+
+    private static bool IsLocalizationTopLevel(string topLevel)
+    {
+        return new[]
+        {
+            "i18n",
+            "lang",
+            "langs",
+            "language",
+            "languages",
+            "locale",
+            "locales",
+            "localisation",
+            "localisations",
+            "localization",
+            "localizations",
+            "translation",
+            "translations"
+        }.Contains(ModPackage.CreateStableId(topLevel), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsDocumentationTopLevel(string topLevel)
+    {
+        return new[]
+        {
+            "changelog",
+            "changelogs",
+            "doc",
+            "docs",
+            "documentation",
+            "license",
+            "licenses",
+            "readme",
+            "readmes"
+        }.Contains(ModPackage.CreateStableId(topLevel), StringComparer.OrdinalIgnoreCase);
     }
 
     private static string SuggestModName(string archivePath)
     {
         var originalName = Path.GetFileNameWithoutExtension(archivePath);
-        var name = Regex.Replace(originalName, @"(?i)-\d+-v?\d+(?:-\d+)+(?:-for-\d+(?:-\d+)*)?-\d+$", string.Empty);
+        var name = Regex.Replace(originalName, @"(?i)[ _-]\d+[ _-]v?\d+(?:[.-]\d+)*(?:-[A-Za-z][A-Za-z0-9.-]*)?[ _-][A-Za-z0-9]{8,}$", string.Empty);
+        name = Regex.Replace(name, @"(?i)-\d+-v?\d+(?:-\d+)+(?:-for-\d+(?:-\d+)*)?-\d+$", string.Empty);
         name = Regex.Replace(name, @"(?i)[_-]?v?\d+(?:\.\d+)+(?:[_-].*)?$", string.Empty);
         name = Regex.Replace(name, @"_\d+_[A-Za-z0-9]+$", string.Empty);
         name = Regex.Replace(name, @"-\d{2,}(?:-\d+)+$", string.Empty);

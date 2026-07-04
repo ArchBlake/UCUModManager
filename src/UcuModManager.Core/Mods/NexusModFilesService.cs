@@ -66,7 +66,7 @@ public sealed class NexusModFilesService
                 document.GameDomain,
                 document.ModId,
                 document.CacheFingerprint,
-                document.Files,
+                NormalizeFiles(document.Files),
                 document.CachedAt,
                 true,
                 null);
@@ -108,7 +108,7 @@ public sealed class NexusModFilesService
                     document.GameDomain,
                     document.ModId,
                     document.CacheFingerprint,
-                    document.Files,
+                    NormalizeFiles(document.Files),
                     document.CachedAt,
                     true,
                     null);
@@ -207,6 +207,7 @@ public sealed class NexusModFilesService
             .Select(ParseFile)
             .Where(file => file is not null)
             .Select(file => file!)
+            .Select(NormalizeFile)
             .OrderBy(file => file.IsOldVersion)
             .ThenByDescending(file => file.IsPrimary)
             .ThenByDescending(file => file.UploadedAt)
@@ -275,7 +276,7 @@ public sealed class NexusModFilesService
             ?? ReadDateTimeOffset(element, "uploaded_time")
             ?? ReadDateTimeOffset(element, "uploaded_at");
         var isPrimary = ReadBool(element, "is_primary") ?? false;
-        var isOldVersion = category.Contains("old", StringComparison.OrdinalIgnoreCase);
+        var isOldVersion = IsOldOrArchivedCategory(category);
 
         return new NexusModFileInfo(
             fileId.Value,
@@ -287,6 +288,32 @@ public sealed class NexusModFilesService
             sizeInBytes,
             isPrimary,
             isOldVersion);
+    }
+
+    private static IReadOnlyList<NexusModFileInfo> NormalizeFiles(IReadOnlyList<NexusModFileInfo> files)
+    {
+        return files
+            .Select(NormalizeFile)
+            .OrderBy(file => file.IsOldVersion)
+            .ThenByDescending(file => file.IsPrimary)
+            .ThenByDescending(file => file.UploadedAt)
+            .ThenBy(file => file.FileName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static NexusModFileInfo NormalizeFile(NexusModFileInfo file)
+    {
+        return file with
+        {
+            IsOldVersion = file.IsOldVersion || IsOldOrArchivedCategory(file.Category)
+        };
+    }
+
+    private static bool IsOldOrArchivedCategory(string? category)
+    {
+        return !string.IsNullOrWhiteSpace(category)
+            && (category.Contains("old", StringComparison.OrdinalIgnoreCase)
+                || category.Contains("archived", StringComparison.OrdinalIgnoreCase));
     }
 
     private static void SaveCache(ManagerPaths managerPaths, NexusModFilesLoadResult result)

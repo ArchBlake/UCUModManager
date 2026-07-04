@@ -136,6 +136,11 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+        <Style x:Key="CompactSecondaryButton" TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+            <Setter Property="Padding" Value="9,5" />
+            <Setter Property="Margin" Value="0,0,5,3" />
+            <Setter Property="MinHeight" Value="28" />
+        </Style>
         <Style x:Key="TitleBarTextButton" TargetType="Button">
             <Setter Property="Height" Value="28" />
             <Setter Property="MinWidth" Value="68" />
@@ -1117,37 +1122,55 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
-                        <DockPanel Margin="0,0,0,6" LastChildFill="False">
-                            <TextBlock Text="Profile Load Order" Style="{StaticResource SectionTitle}" DockPanel.Dock="Left" Margin="0,0,12,0" VerticalAlignment="Center" />
-                            <TextBlock x:Name="AutoLinkStatusText" Style="{StaticResource MutedText}" DockPanel.Dock="Left" Margin="0,0,12,4" VerticalAlignment="Center" />
-                            <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
-                                <Button Content="Link Nexus" Style="{StaticResource SecondaryButton}" Click="LinkNexus_Click" />
-                                <Button x:Name="AutoLinkNexusButton" Content="Auto Link Nexus" Style="{StaticResource SecondaryButton}" Click="AutoLinkNexus_Click" />
-                                <Button Content="Move Up" Style="{StaticResource SecondaryButton}" Click="MoveUp_Click" />
-                                <Button Content="Move Down" Style="{StaticResource SecondaryButton}" Click="MoveDown_Click" />
-                                <Button Content="Remove Mod" Style="{StaticResource SecondaryButton}" Click="RemoveSelectedMod_Click" />
+                        <Grid Margin="0,0,0,6">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Row="0"
+                                       Grid.Column="0"
+                                       Text="Profile Load Order"
+                                       Style="{StaticResource SectionTitle}"
+                                       Margin="0,0,12,2"
+                                       VerticalAlignment="Center" />
+                            <WrapPanel Grid.Row="0" Grid.Column="1" HorizontalAlignment="Right">
+                                <Button Content="Link Nexus" Style="{StaticResource CompactSecondaryButton}" Click="LinkNexus_Click" />
+                                <Button x:Name="AutoLinkNexusButton" Content="Auto Link Nexus" Style="{StaticResource CompactSecondaryButton}" Click="AutoLinkNexus_Click" />
+                                <Button Content="Move Up" Style="{StaticResource CompactSecondaryButton}" Click="MoveUp_Click" />
+                                <Button Content="Move Down" Style="{StaticResource CompactSecondaryButton}" Click="MoveDown_Click" />
+                                <Button Content="Remove Mod" Style="{StaticResource CompactSecondaryButton}" Click="RemoveSelectedMod_Click" />
                             </WrapPanel>
-                        </DockPanel>
+                            <TextBlock x:Name="AutoLinkStatusText"
+                                       Grid.Row="1"
+                                       Grid.ColumnSpan="2"
+                                       Style="{StaticResource MutedText}"
+                                       TextTrimming="CharacterEllipsis"
+                                       Margin="0,0,0,2" />
+                        </Grid>
                         <ListView x:Name="ModsListView" Grid.Row="1" SelectionChanged="ModsListView_SelectionChanged">
                             <ListView.View>
                                 <GridView>
-                                    <GridViewColumn Header="On" Width="52">
+                                    <GridViewColumn Header="On" Width="44">
                                         <GridViewColumn.CellTemplate>
                                             <DataTemplate>
                                                 <CheckBox IsChecked="{Binding IsEnabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Click="EnabledCheckBox_Click" HorizontalAlignment="Center" />
                                             </DataTemplate>
                                         </GridViewColumn.CellTemplate>
                                     </GridViewColumn>
-                                    <GridViewColumn Header="Order" Width="66" DisplayMemberBinding="{Binding Priority}" />
-                                    <GridViewColumn Header="Mod" Width="190" DisplayMemberBinding="{Binding Name}" />
-                                    <GridViewColumn Header="Version" Width="88" DisplayMemberBinding="{Binding Version}" />
-                                    <GridViewColumn Header="Files" Width="62" DisplayMemberBinding="{Binding FileCount}" />
-                                    <GridViewColumn Header="Plugins" Width="78" DisplayMemberBinding="{Binding PluginCount}" />
-                                    <GridViewColumn Header="Content" Width="82" DisplayMemberBinding="{Binding ContentFileCount}" />
-                                    <GridViewColumn Header="Configs" Width="80" DisplayMemberBinding="{Binding ProfileConfigCount}" />
-                                    <GridViewColumn Header="Refs" Width="64" DisplayMemberBinding="{Binding DependencyStatus}" />
-                                    <GridViewColumn Header="Updates" Width="118" DisplayMemberBinding="{Binding UpdateStatus}" />
-                                    <GridViewColumn Header="Status" Width="96" DisplayMemberBinding="{Binding Status}" />
+                                    <GridViewColumn Header="Order" Width="56" DisplayMemberBinding="{Binding Priority}" />
+                                    <GridViewColumn Header="Mod" Width="260" DisplayMemberBinding="{Binding DisplayName}" />
+                                    <GridViewColumn Header="Version" Width="76" DisplayMemberBinding="{Binding Version}" />
+                                    <GridViewColumn x:Name="ModFilesColumn" Header="Files" Width="0" DisplayMemberBinding="{Binding FileCount}" />
+                                    <GridViewColumn x:Name="ModPluginsColumn" Header="Plugins" Width="0" DisplayMemberBinding="{Binding PluginCount}" />
+                                    <GridViewColumn x:Name="ModContentColumn" Header="Content" Width="0" DisplayMemberBinding="{Binding ContentFileCount}" />
+                                    <GridViewColumn x:Name="ModConfigsColumn" Header="Configs" Width="0" DisplayMemberBinding="{Binding ProfileConfigCount}" />
+                                    <GridViewColumn Header="Deps" Width="58" DisplayMemberBinding="{Binding DependencyStatus}" />
+                                    <GridViewColumn Header="Update" Width="112" DisplayMemberBinding="{Binding UpdateStatus}" />
+                                    <GridViewColumn Header="State" Width="76" DisplayMemberBinding="{Binding Status}" />
                                 </GridView>
                             </ListView.View>
                         </ListView>
@@ -1516,49 +1539,18 @@
         <Grid x:Name="ModpacksView" Margin="22" Visibility="Collapsed">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
-            <DockPanel Grid.Row="0" Margin="0,0,0,10">
-                <StackPanel DockPanel.Dock="Left">
-                    <TextBlock Text="Modpacks" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
-                    <TextBlock x:Name="ModpacksStatusText" Style="{StaticResource MutedText}" />
-                </StackPanel>
-                <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
-                    <Button Content="Export .UCU" Style="{StaticResource PrimaryButton}" Click="ExportUcuModpack_Click" />
-                    <Button Content="Export .UCUP" Style="{StaticResource SecondaryButton}" Click="ExportUcupModpack_Click" />
-                    <Button Content="Import Modpack" Style="{StaticResource SecondaryButton}" Click="ImportUcuModpack_Click" />
-                </WrapPanel>
-            </DockPanel>
+            <StackPanel Grid.Row="0" Margin="0,0,0,12">
+                <TextBlock Text="Modpacks" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
+                <TextBlock x:Name="ModpacksStatusText" Style="{StaticResource MutedText}" TextWrapping="Wrap" />
+            </StackPanel>
 
-            <Grid Grid.Row="1" Margin="0,0,0,10">
+            <Grid Grid.Row="1">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="106" />
-                    <ColumnDefinition Width="320" />
                     <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0"
-                           Text="Export profile"
-                           Style="{StaticResource MetricTitle}"
-                           VerticalAlignment="Center" />
-                <ComboBox x:Name="ModpackExportProfileComboBox"
-                          Grid.Column="1"
-                          Height="30"
-                          DisplayMemberPath="Name" />
-            </Grid>
-
-            <TextBlock Grid.Row="2"
-                       Text=".UCU stores a Nexus recipe. .UCUP stores the profile and mod files inside one portable modpack."
-                       Style="{StaticResource MutedText}"
-                       TextWrapping="Wrap"
-                       Margin="0,0,0,10" />
-
-            <Grid Grid.Row="3">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="2*" />
-                    <ColumnDefinition Width="1.05*" />
+                    <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
 
                 <Border Grid.Column="0"
@@ -1568,18 +1560,119 @@
                         CornerRadius="6"
                         Padding="12"
                         Margin="0,0,12,0">
-                    <ListView x:Name="ImportedUcuModpackListView">
-                        <ListView.View>
-                            <GridView>
-                                <GridViewColumn Header="Order" Width="58" DisplayMemberBinding="{Binding Priority}" />
-                                <GridViewColumn Header="Mod" Width="240" DisplayMemberBinding="{Binding Name}" />
-                                <GridViewColumn Header="Version" Width="90" DisplayMemberBinding="{Binding Version}" />
-                                <GridViewColumn Header="Enabled" Width="72" DisplayMemberBinding="{Binding Enabled}" />
-                                <GridViewColumn Header="Source" Width="130" DisplayMemberBinding="{Binding Source}" />
-                                <GridViewColumn Header="Status" Width="120" DisplayMemberBinding="{Binding Status}" />
-                            </GridView>
-                        </ListView.View>
-                    </ListView>
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <DockPanel Grid.Row="0" Margin="0,0,0,8">
+                            <StackPanel DockPanel.Dock="Left">
+                                <TextBlock Text="Export Profile" Style="{StaticResource SectionTitle}" />
+                                <TextBlock Text="Choose a profile and save its current mod order as a shareable modpack."
+                                           Style="{StaticResource MutedText}"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </DockPanel>
+
+                        <Grid Grid.Row="1" Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="260" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0"
+                                       Text="Profile"
+                                       Style="{StaticResource MetricTitle}"
+                                       VerticalAlignment="Center" />
+                            <ComboBox x:Name="ModpackExportProfileComboBox"
+                                      Grid.Column="1"
+                                      Height="30"
+                                      DisplayMemberPath="Name"
+                                      SelectionChanged="ModpackExportProfileComboBox_SelectionChanged" />
+                            <TextBlock x:Name="ModpackExportProfileSummaryText"
+                                       Grid.Column="2"
+                                       Style="{StaticResource MutedText}"
+                                       TextWrapping="Wrap"
+                                       VerticalAlignment="Center"
+                                       Margin="10,0,0,0" />
+                        </Grid>
+
+                        <Grid Grid.Row="2" Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Column="0"
+                                    Background="{StaticResource PanelAltBrush}"
+                                    BorderBrush="{StaticResource BorderBrushDark}"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="10"
+                                    Margin="0,0,8,0">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="0,0,14,0">
+                                        <TextBlock Text=".UCU Recipe" FontWeight="SemiBold" />
+                                        <TextBlock Text="Small file with Nexus links and load order. Mods are downloaded during install."
+                                                   Style="{StaticResource MutedText}"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1"
+                                            Content="Export .UCU"
+                                            Style="{StaticResource PrimaryButton}"
+                                            MinWidth="96"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Top"
+                                            Click="ExportUcuModpack_Click" />
+                                </Grid>
+                            </Border>
+                            <Border Grid.Column="1"
+                                    Background="{StaticResource PanelAltBrush}"
+                                    BorderBrush="{StaticResource BorderBrushDark}"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="10">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="0,0,14,0">
+                                        <TextBlock Text=".UCUP Portable" FontWeight="SemiBold" />
+                                        <TextBlock Text="Larger file that includes the profile and mod archives for offline install."
+                                                   Style="{StaticResource MutedText}"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1"
+                                            Content="Export .UCUP"
+                                            Style="{StaticResource SecondaryButton}"
+                                            MinWidth="104"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Top"
+                                            Click="ExportUcupModpack_Click" />
+                                </Grid>
+                            </Border>
+                        </Grid>
+
+                        <ListView x:Name="ModpackExportProfileListView" Grid.Row="3">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Order" Width="58" DisplayMemberBinding="{Binding Priority}" />
+                                    <GridViewColumn Header="Mod" Width="230" DisplayMemberBinding="{Binding DisplayName}" />
+                                    <GridViewColumn Header="Version" Width="84" DisplayMemberBinding="{Binding Version}" />
+                                    <GridViewColumn Header="Enabled" Width="70" DisplayMemberBinding="{Binding Enabled}" />
+                                    <GridViewColumn Header="Source" Width="120" DisplayMemberBinding="{Binding Source}" />
+                                    <GridViewColumn Header="Status" Width="130" DisplayMemberBinding="{Binding Status}" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </Grid>
                 </Border>
 
                 <Border Grid.Column="1"
@@ -1588,22 +1681,115 @@
                         BorderThickness="1"
                         CornerRadius="6"
                         Padding="12">
-                    <StackPanel>
-                        <TextBlock Text="Imported Modpack" Style="{StaticResource SectionTitle}" />
-                        <TextBlock x:Name="ImportedUcuNameText" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,4,0,4" />
-                        <TextBlock x:Name="ImportedUcuPathText" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,10" />
-                        <TextBlock x:Name="ImportedUcuSummaryText" TextWrapping="Wrap" Margin="0,0,0,12" />
-                        <WrapPanel>
-                            <Button x:Name="InstallImportedUcuModpackButton"
-                                    Content="Install Modpack"
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0" Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Margin="0,0,16,0">
+                                <TextBlock Text="Import Modpack" Style="{StaticResource SectionTitle}" />
+                                <TextBlock Text="Load a received .UCU or .UCUP file, review its mods, then install it as a new profile."
+                                           Style="{StaticResource MutedText}"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                            <Button Grid.Column="1"
+                                    Content="Import Modpack"
                                     Style="{StaticResource PrimaryButton}"
-                                    Click="InstallImportedUcuModpack_Click" />
-                            <Button x:Name="OpenImportedUcuPagesButton"
-                                    Content="Open All Nexus Pages"
-                                    Style="{StaticResource SecondaryButton}"
-                                    Click="OpenImportedUcuPages_Click" />
-                        </WrapPanel>
-                    </StackPanel>
+                                    MinWidth="118"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Top"
+                                    Click="ImportUcuModpack_Click" />
+                        </Grid>
+
+                        <Grid Grid.Row="1" Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Column="0"
+                                    Background="{StaticResource PanelAltBrush}"
+                                    BorderBrush="{StaticResource BorderBrushDark}"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="10"
+                                    Margin="0,0,8,0">
+                                <StackPanel>
+                                    <TextBlock Text=".UCU" FontWeight="SemiBold" />
+                                    <TextBlock Text="Needs Nexus access. Without Premium, open Nexus pages and install archives manually."
+                                               Style="{StaticResource MutedText}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="1"
+                                    Background="{StaticResource PanelAltBrush}"
+                                    BorderBrush="{StaticResource BorderBrushDark}"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="10">
+                                <StackPanel>
+                                    <TextBlock Text=".UCUP" FontWeight="SemiBold" />
+                                    <TextBlock Text="Contains mod archives. Best for sharing a full ready-to-install profile."
+                                               Style="{StaticResource MutedText}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+
+                        <Border Grid.Row="2"
+                                Background="{StaticResource PanelAltBrush}"
+                                BorderBrush="{StaticResource BorderBrushDark}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="10"
+                                Margin="0,0,0,10">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,16,0">
+                                    <TextBlock Text="Imported Modpack" Style="{StaticResource MetricTitle}" />
+                                    <TextBlock x:Name="ImportedUcuNameText" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,2,0,2" />
+                                    <TextBlock x:Name="ImportedUcuPathText" Style="{StaticResource MutedText}" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="ImportedUcuSummaryText" TextWrapping="Wrap" Margin="0,8,0,0" />
+                                </StackPanel>
+                                <WrapPanel Grid.Column="1"
+                                           Margin="12,0,0,0"
+                                           HorizontalAlignment="Right"
+                                           VerticalAlignment="Top">
+                                    <Button x:Name="InstallImportedUcuModpackButton"
+                                            Content="Install Modpack"
+                                            Style="{StaticResource PrimaryButton}"
+                                            Click="InstallImportedUcuModpack_Click" />
+                                    <Button x:Name="OpenImportedUcuPagesButton"
+                                            Content="Open All Nexus Pages"
+                                            Style="{StaticResource SecondaryButton}"
+                                            Click="OpenImportedUcuPages_Click" />
+                                </WrapPanel>
+                            </Grid>
+                        </Border>
+
+                        <ListView x:Name="ImportedUcuModpackListView" Grid.Row="3">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Order" Width="58" DisplayMemberBinding="{Binding Priority}" />
+                                    <GridViewColumn Header="Mod" Width="230" DisplayMemberBinding="{Binding DisplayName}" />
+                                    <GridViewColumn Header="Version" Width="84" DisplayMemberBinding="{Binding Version}" />
+                                    <GridViewColumn Header="Enabled" Width="70" DisplayMemberBinding="{Binding Enabled}" />
+                                    <GridViewColumn Header="Source" Width="120" DisplayMemberBinding="{Binding Source}" />
+                                    <GridViewColumn Header="Status" Width="130" DisplayMemberBinding="{Binding Status}" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </Grid>
                 </Border>
             </Grid>
         </Grid>
@@ -1630,6 +1816,11 @@
                     VerticalAlignment="Top">
                 <Grid>
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
@@ -1680,6 +1871,35 @@
                                    VerticalAlignment="Center"
                                    Margin="10,0,0,0" />
                     </DockPanel>
+                    <TextBlock Grid.Row="8"
+                               Text="Metadata catalog"
+                               Style="{StaticResource MetricTitle}"
+                               Margin="0,14,0,4" />
+                    <DockPanel Grid.Row="9" LastChildFill="True">
+                        <Button x:Name="RefreshNexusMetadataButton"
+                                DockPanel.Dock="Left"
+                                Content="Refresh Metadata"
+                                Style="{StaticResource SecondaryButton}"
+                                Click="RefreshNexusMetadata_Click" />
+                        <TextBlock x:Name="NexusMetadataStatusText"
+                                   Style="{StaticResource MutedText}"
+                                   TextWrapping="Wrap"
+                                   VerticalAlignment="Center"
+                                   Margin="10,0,0,0" />
+                    </DockPanel>
+                    <TextBlock Grid.Row="10"
+                               Text="Interface"
+                               Style="{StaticResource SectionTitle}"
+                               Margin="0,16,0,4" />
+                    <CheckBox x:Name="ShowAdvancedModColumnsCheckBox"
+                              Grid.Row="11"
+                              Content="Advanced Mode"
+                              Checked="ShowAdvancedModColumnsCheckBox_Changed"
+                              Unchecked="ShowAdvancedModColumnsCheckBox_Changed" />
+                    <TextBlock Grid.Row="12"
+                               Text="Shows the full technical view for mod authors, debugging and detailed file review."
+                               Style="{StaticResource MutedText}"
+                               Margin="23,4,0,0" />
                 </Grid>
             </Border>
         </Grid>

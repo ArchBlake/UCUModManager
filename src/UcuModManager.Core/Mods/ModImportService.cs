@@ -34,10 +34,10 @@ public sealed class ModImportService
         }
 
         var preferredModId = ModPackage.CreateStableId(plan.SuggestedModName);
-        var preferredModDirectoryPath = Path.Combine(managerPaths.ModsPath, string.IsNullOrWhiteSpace(preferredModId) ? "mod" : preferredModId);
-        var isUpdate = Directory.Exists(preferredModDirectoryPath);
+        var existingModId = FindExistingModId(managerPaths.ModsPath, preferredModId, plan.Source);
+        var isUpdate = existingModId is not null;
         var modId = isUpdate
-            ? Path.GetFileName(preferredModDirectoryPath)
+            ? existingModId!
             : CreateUniqueModId(managerPaths.ModsPath, preferredModId);
 
         return new ModImportPreview(
@@ -67,10 +67,10 @@ public sealed class ModImportService
         Directory.CreateDirectory(managerPaths.CachePath);
 
         var preferredModId = ModPackage.CreateStableId(plan.SuggestedModName);
-        var preferredModDirectoryPath = Path.Combine(managerPaths.ModsPath, string.IsNullOrWhiteSpace(preferredModId) ? "mod" : preferredModId);
-        var isUpdate = Directory.Exists(preferredModDirectoryPath);
+        var existingModId = FindExistingModId(managerPaths.ModsPath, preferredModId, plan.Source);
+        var isUpdate = existingModId is not null;
         var modId = isUpdate
-            ? Path.GetFileName(preferredModDirectoryPath)
+            ? existingModId!
             : CreateUniqueModId(managerPaths.ModsPath, preferredModId);
         var modDirectoryPath = Path.Combine(managerPaths.ModsPath, modId);
         var stagingRootPath = Path.Combine(managerPaths.CachePath, "import-staging", Guid.NewGuid().ToString("N"));
@@ -174,6 +174,63 @@ public sealed class ModImportService
         }
 
         return candidate;
+    }
+
+    private static string? FindExistingModId(string modsPath, string preferredModId, ModSourceInfo? source)
+    {
+        var normalizedPreferredModId = string.IsNullOrWhiteSpace(preferredModId) ? "mod" : preferredModId;
+        if (Directory.Exists(Path.Combine(modsPath, normalizedPreferredModId)))
+        {
+            return normalizedPreferredModId;
+        }
+
+        if (!CanMatchExistingNexusSource(source) || !Directory.Exists(modsPath))
+        {
+            return null;
+        }
+
+        foreach (var manifestPath in Directory.EnumerateFiles(modsPath, "manifest.json", SearchOption.AllDirectories)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+        {
+            var manifest = LoadManifest(manifestPath);
+            if (manifest?.Source is null || !SourcesReferToSameNexusMod(source!, manifest.Source))
+            {
+                continue;
+            }
+
+            return Path.GetFileName(Path.GetDirectoryName(manifestPath));
+        }
+
+        return null;
+    }
+
+    private static bool CanMatchExistingNexusSource(ModSourceInfo? source)
+    {
+        return source is not null
+            && source.Provider.Equals("NexusMods", StringComparison.OrdinalIgnoreCase)
+            && source.ModId is not null;
+    }
+
+    private static bool SourcesReferToSameNexusMod(ModSourceInfo incoming, ModSourceInfo existing)
+    {
+        if (!existing.Provider.Equals("NexusMods", StringComparison.OrdinalIgnoreCase)
+            || incoming.ModId is null
+            || existing.ModId is null
+            || incoming.ModId.Value != existing.ModId.Value)
+        {
+            return false;
+        }
+
+        var incomingDomain = NormalizeNexusDomain(incoming.GameDomain);
+        var existingDomain = NormalizeNexusDomain(existing.GameDomain);
+        return string.IsNullOrWhiteSpace(incomingDomain)
+            || string.IsNullOrWhiteSpace(existingDomain)
+            || incomingDomain.Equals(existingDomain, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeNexusDomain(string? domain)
+    {
+        return string.IsNullOrWhiteSpace(domain) ? string.Empty : domain.Trim().ToLowerInvariant();
     }
 
     private static ModManifest? LoadManifest(string manifestPath)
