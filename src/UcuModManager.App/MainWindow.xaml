@@ -1060,15 +1060,21 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
                         <TextBlock Grid.Row="0" Text="Profile Deploy" Style="{StaticResource SectionTitle}" />
                         <WrapPanel Grid.Row="1" Margin="0,0,0,6">
                             <Button Content="Clean" Style="{StaticResource SecondaryButton}" Click="CleanDeployment_Click" />
                             <Button Content="Deploy" Style="{StaticResource PrimaryButton}" Click="DeployProfile_Click" />
+                            <Button x:Name="VirtualLaunchButton"
+                                    Content="Launch Virtual"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Click="VirtualLaunchGame_Click" />
                         </WrapPanel>
                         <TextBlock x:Name="DeployStatusText" Grid.Row="2" TextWrapping="Wrap" FontSize="12" />
                         <TextBlock x:Name="DeployDetailText" Grid.Row="3" Margin="0,5,0,0" Style="{StaticResource MutedText}" />
+                        <TextBlock x:Name="VirtualLaunchStatusText" Grid.Row="4" Margin="0,5,0,0" Style="{StaticResource MutedText}" />
                     </Grid>
                 </Border>
             </Grid>
@@ -1829,6 +1835,13 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Text="Nexus Mods" Style="{StaticResource SectionTitle}" />
@@ -1899,6 +1912,42 @@
                     <TextBlock Grid.Row="12"
                                Text="Shows the full technical view for mod authors, debugging and detailed file review."
                                Style="{StaticResource MutedText}"
+                               Margin="23,4,0,0" />
+                    <TextBlock Grid.Row="13"
+                               Text="Virtualization"
+                               Style="{StaticResource SectionTitle}"
+                               Margin="0,16,0,4" />
+                    <CheckBox x:Name="VirtualizationEnabledCheckBox"
+                              Grid.Row="14"
+                              Content="Enable Virtualized Launch"
+                              Checked="VirtualizationEnabledCheckBox_Changed"
+                              Unchecked="VirtualizationEnabledCheckBox_Changed" />
+                    <TextBlock Grid.Row="15"
+                               Text="Keeps mods and generated profile state inside the manager folder. The game starts from a linked profile runtime image instead of receiving copied mod files."
+                               Style="{StaticResource MutedText}"
+                               TextWrapping="Wrap"
+                               Margin="23,4,0,0" />
+                    <CheckBox x:Name="ExperimentalVirtualizedLaunchCheckBox"
+                              Grid.Row="16"
+                              Content="Use virtualized launch for active profile"
+                              Margin="0,10,0,0"
+                              Checked="ExperimentalVirtualizedLaunchCheckBox_Changed"
+                              Unchecked="ExperimentalVirtualizedLaunchCheckBox_Changed" />
+                    <TextBlock Grid.Row="17"
+                               Text="Saved in the active profile. BepInEx remains installed in the real game folder, while enabled mods are linked into the profile runtime image."
+                               Style="{StaticResource MutedText}"
+                               TextWrapping="Wrap"
+                               Margin="23,4,0,0" />
+                    <CheckBox x:Name="RedirectVirtualWritesCheckBox"
+                              Grid.Row="18"
+                              Content="Redirect writes to profile state"
+                              Margin="0,10,0,0"
+                              Checked="RedirectVirtualWritesCheckBox_Changed"
+                              Unchecked="RedirectVirtualWritesCheckBox_Changed" />
+                    <TextBlock Grid.Row="19"
+                               Text="Saved in the active profile. BepInEx logs, generated configs and runtime files stay in the profile runtime folder."
+                               Style="{StaticResource MutedText}"
+                               TextWrapping="Wrap"
                                Margin="23,4,0,0" />
                 </Grid>
             </Border>

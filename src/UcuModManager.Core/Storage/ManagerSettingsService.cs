@@ -43,9 +43,27 @@ public sealed class ManagerSettingsService
         var normalized = ShouldResetNexusGameDomain(settings.NexusGameDomain)
             ? settings with { NexusGameDomain = ManagerSettings.Empty.NexusGameDomain }
             : settings;
-        return json is not null && !HasJsonProperty(json, nameof(ManagerSettings.AutoLinkNexusOnStartup))
-            ? normalized with { AutoLinkNexusOnStartup = true }
-            : normalized;
+        if (json is null)
+        {
+            return normalized;
+        }
+
+        if (!HasJsonProperty(json, nameof(ManagerSettings.AutoLinkNexusOnStartup)))
+        {
+            normalized = normalized with { AutoLinkNexusOnStartup = true };
+        }
+
+        if (!HasJsonProperty(json, nameof(ManagerSettings.VirtualizationEnabled)))
+        {
+            normalized = normalized with { VirtualizationEnabled = true };
+        }
+
+        if (!HasJsonProperty(json, nameof(ManagerSettings.VirtualizationIntroShown)))
+        {
+            normalized = normalized with { VirtualizationIntroShown = false };
+        }
+
+        return normalized;
     }
 
     private static bool HasJsonProperty(string json, string propertyName)

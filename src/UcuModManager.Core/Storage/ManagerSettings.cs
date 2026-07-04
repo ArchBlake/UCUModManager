@@ -7,7 +7,9 @@ public sealed record ManagerSettings(
     bool UseProfileSpecificBepInEx,
     string NexusGameDomain = "scavprototype",
     bool AutoLinkNexusOnStartup = true,
-    bool ShowAdvancedModColumns = false)
+    bool ShowAdvancedModColumns = false,
+    bool VirtualizationEnabled = true,
+    bool VirtualizationIntroShown = false)
 {
     public static ManagerSettings Empty { get; } = new(
         string.Empty,
@@ -16,5 +18,7 @@ public sealed record ManagerSettings(
         UseProfileSpecificBepInEx: true,
         NexusGameDomain: "scavprototype",
         AutoLinkNexusOnStartup: true,
-        ShowAdvancedModColumns: false);
+        ShowAdvancedModColumns: false,
+        VirtualizationEnabled: true,
+        VirtualizationIntroShown: false);
 }

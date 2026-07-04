@@ -6,8 +6,10 @@ using UcuModManager.Core.Storage;
 
 namespace UcuModManager.Core.Mods;
 
-public sealed class NexusModFilesService
+public sealed class NexusModFilesService : IDisposable
 {
+    private const int MaxMemoryCacheEntries = 128;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -16,10 +18,13 @@ public sealed class NexusModFilesService
 
     private readonly HttpClient _httpClient;
     private readonly Dictionary<string, NexusModFilesLoadResult> _memoryCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Queue<string> _memoryCacheOrder = new();
+    private readonly bool _ownsHttpClient;
 
     public NexusModFilesService(HttpClient? httpClient = null)
     {
         _httpClient = httpClient ?? new HttpClient();
+        _ownsHttpClient = httpClient is null;
     }
 
     public bool HasCachedFiles(
@@ -70,7 +75,7 @@ public sealed class NexusModFilesService
                 document.CachedAt,
                 true,
                 null);
-            _memoryCache[key] = result;
+            CacheInMemory(key, result);
             return result;
         }
         catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
@@ -112,7 +117,7 @@ public sealed class NexusModFilesService
                     document.CachedAt,
                     true,
                     null);
-                _memoryCache[BuildMemoryCacheKey(document.GameDomain, document.ModId, document.CacheFingerprint)] = result;
+                CacheInMemory(BuildMemoryCacheKey(document.GameDomain, document.ModId, document.CacheFingerprint), result);
                 return result;
             }
             catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
@@ -157,8 +162,18 @@ public sealed class NexusModFilesService
             false,
             null);
         SaveCache(managerPaths, result);
-        _memoryCache[BuildMemoryCacheKey(gameDomain, modId, cacheFingerprint)] = result;
+        CacheInMemory(BuildMemoryCacheKey(gameDomain, modId, cacheFingerprint), result);
         return result;
+    }
+
+    public void Dispose()
+    {
+        _memoryCache.Clear();
+        _memoryCacheOrder.Clear();
+        if (_ownsHttpClient)
+        {
+            _httpClient.Dispose();
+        }
     }
 
     public static string BuildCacheFingerprint(
@@ -351,6 +366,22 @@ public sealed class NexusModFilesService
     private static string BuildMemoryCacheKey(string gameDomain, int modId, string cacheFingerprint)
     {
         return $"{gameDomain.Trim().ToLowerInvariant()}:{modId}:{cacheFingerprint.Trim().ToLowerInvariant()}";
+    }
+
+    private void CacheInMemory(string key, NexusModFilesLoadResult result)
+    {
+        var isNewEntry = !_memoryCache.ContainsKey(key);
+        _memoryCache[key] = result;
+        if (isNewEntry)
+        {
+            _memoryCacheOrder.Enqueue(key);
+        }
+
+        while (_memoryCache.Count > MaxMemoryCacheEntries && _memoryCacheOrder.Count > 0)
+        {
+            var oldestKey = _memoryCacheOrder.Dequeue();
+            _memoryCache.Remove(oldestKey);
+        }
     }
 
     private static bool TryGetProperty(JsonElement element, string propertyName, out JsonElement property)

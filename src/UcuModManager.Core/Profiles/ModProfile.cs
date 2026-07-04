@@ -6,6 +6,8 @@ public sealed record ModProfile(
     IReadOnlyList<ProfileModEntry> Mods,
     string ProfileBepInExPath)
 {
+    public ProfileVirtualizationSettings Virtualization { get; init; } = ProfileVirtualizationSettings.Empty;
+
     public static ModProfile CreateDefault(string managerRootPath)
     {
         var id = "default";

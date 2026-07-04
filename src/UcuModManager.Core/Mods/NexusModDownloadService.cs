@@ -3,13 +3,15 @@ using System.Text.Json;
 
 namespace UcuModManager.Core.Mods;
 
-public sealed class NexusModDownloadService
+public sealed class NexusModDownloadService : IDisposable
 {
     private readonly HttpClient _httpClient;
+    private readonly bool _ownsHttpClient;
 
     public NexusModDownloadService(HttpClient? httpClient = null)
     {
         _httpClient = httpClient ?? new HttpClient();
+        _ownsHttpClient = httpClient is null;
     }
 
     public async Task<NexusModDownloadResult> DownloadUpdateArchiveAsync(
@@ -37,6 +39,14 @@ public sealed class NexusModDownloadService
             .ConfigureAwait(false);
 
         return new NexusModDownloadResult(destinationPath, downloadUri, Path.GetFileName(destinationPath));
+    }
+
+    public void Dispose()
+    {
+        if (_ownsHttpClient)
+        {
+            _httpClient.Dispose();
+        }
     }
 
     private async Task<Uri> GetDownloadUriAsync(

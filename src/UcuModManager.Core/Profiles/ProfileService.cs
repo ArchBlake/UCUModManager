@@ -162,7 +162,8 @@ public sealed class ProfileService
         var profileToSave = profile with
         {
             Name = CleanProfileName(profile.Name, profile.Id),
-            ProfileBepInExPath = GetProfileBepInExPath(managerPaths, profile.Id)
+            ProfileBepInExPath = GetProfileBepInExPath(managerPaths, profile.Id),
+            Virtualization = NormalizeVirtualizationSettings(profile.Virtualization)
         };
 
         Directory.CreateDirectory(profileDirectory);
@@ -199,8 +200,14 @@ public sealed class ProfileService
         return profile with
         {
             Mods = synchronizedEntries,
-            ProfileBepInExPath = GetProfileBepInExPath(managerPaths, profile.Id)
+            ProfileBepInExPath = GetProfileBepInExPath(managerPaths, profile.Id),
+            Virtualization = NormalizeVirtualizationSettings(profile.Virtualization)
         };
+    }
+
+    private static ProfileVirtualizationSettings NormalizeVirtualizationSettings(ProfileVirtualizationSettings? settings)
+    {
+        return settings ?? ProfileVirtualizationSettings.Empty;
     }
 
     private static IReadOnlyList<string> BuildDependencyAwareOrder(IReadOnlyList<ModLibraryEntry> libraryEntries)

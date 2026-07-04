@@ -8,19 +8,26 @@ var positionalArgs = args.Where(arg => !arg.StartsWith("--", StringComparison.Or
 var samplesPath = positionalArgs.Length > 0
     ? Path.GetFullPath(positionalArgs[0])
     : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "samples"));
+var samplesBasePath = File.Exists(samplesPath)
+    ? Path.GetDirectoryName(samplesPath) ?? Directory.GetCurrentDirectory()
+    : samplesPath;
 var importEnabled = args.Contains("--import", StringComparer.OrdinalIgnoreCase);
 var librarySummaryEnabled = importEnabled || args.Contains("--library", StringComparer.OrdinalIgnoreCase);
 var overlayPreviewEnabled = args.Contains("--overlay", StringComparer.OrdinalIgnoreCase);
 var profileSummaryEnabled = overlayPreviewEnabled || args.Contains("--profile", StringComparer.OrdinalIgnoreCase);
 var managerRootPath = GetOptionValue(args, "--manager-root")
-    ?? Path.GetFullPath(Path.Combine(samplesPath, "..", "dev-data"));
+    ?? Path.GetFullPath(Path.Combine(samplesBasePath, "..", "dev-data"));
 var gameRootPath = GetOptionValue(args, "--game-root") ?? @"E:\Steam\steamapps\common\Casualties Unknown Demo";
 
 var analyzer = new ModArchiveAnalyzer();
 var importer = new ModImportService(analyzer);
 var managerPaths = new ManagerPaths(managerRootPath);
 
-foreach (var archivePath in Directory.EnumerateFiles(samplesPath, "*.zip").OrderBy(Path.GetFileName))
+var archivePaths = File.Exists(samplesPath)
+    ? new[] { samplesPath }
+    : Directory.EnumerateFiles(samplesPath, "*.zip").OrderBy(Path.GetFileName).ToArray();
+
+foreach (var archivePath in archivePaths)
 {
     if (Path.GetFileName(archivePath).StartsWith("BepInEx_", StringComparison.OrdinalIgnoreCase))
     {

@@ -15,6 +15,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Interop;
+using System.Windows.Threading;
 using UcuModManager.Core.BepInEx;
 using UcuModManager.Core.Deployment;
 using UcuModManager.Core.Games;
@@ -32,6 +33,7 @@ public partial class MainWindow : Window
     private const int MonitorDefaultToNearest = 0x00000002;
     private const int DwmWindowCornerPreferenceAttribute = 33;
     private const int DwmWindowCornerPreferenceRound = 2;
+    private const int MaxImageCacheEntries = 96;
     private const string SteamAppId = "4576510";
     private const string SteamGameFolderName = "Casualties Unknown Demo";
     private const int MinimumDependencyCandidateScore = 100;
@@ -53,6 +55,9 @@ public partial class MainWindow : Window
     private readonly ProfileDeployService _profileDeployService = new();
     private readonly VirtualizationPlanBuilder _virtualizationPlanBuilder = new();
     private readonly OverlayPreviewService _overlayPreviewService = new();
+    private readonly VirtualizedLaunchPlanWriter _virtualizedLaunchPlanWriter = new();
+    private readonly VirtualizedLaunchPlanValidator _virtualizedLaunchPlanValidator = new();
+    private readonly VirtualizedGameImageBuilder _virtualizedGameImageBuilder = new();
     private readonly NexusModDownloadService _nexusModDownloadService = new();
     private readonly NexusModFilesService _nexusModFilesService = new();
     private readonly NexusMetadataCatalogService _nexusMetadataCatalogService = new();
@@ -60,6 +65,7 @@ public partial class MainWindow : Window
     private readonly SecureSecretStore _secureSecretStore = new();
     private readonly HttpClient _imageHttpClient = new();
     private readonly Dictionary<string, BitmapImage> _imageCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Queue<string> _imageCacheOrder = new();
     private readonly ObservableCollection<ModRow> _mods = new();
     private readonly ObservableCollection<ProfileRow> _profiles = new();
     private readonly ObservableCollection<NexusCatalogRow> _nexusCatalogRows = new();
@@ -82,6 +88,7 @@ public partial class MainWindow : Window
     private int _selectedImageRequestId;
     private int _nexusBrowserImageRequestId;
     private string? _lastNexusFilesCacheSummary;
+    private HwndSource? _windowSource;
 
     public MainWindow()
     {
@@ -102,6 +109,7 @@ public partial class MainWindow : Window
         ModpackExportProfileListView.ItemsSource = _modpackProfileRows;
         ImportedUcuModpackListView.ItemsSource = _ucuModpackRows;
         SourceInitialized += MainWindow_SourceInitialized;
+        Closed += MainWindow_Closed;
         Loaded += MainWindow_Loaded;
         ApplyModTableColumnSettings();
         TryAutoConfigureGameFolder();
@@ -113,6 +121,7 @@ public partial class MainWindow : Window
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindow_Loaded;
+        await ShowVirtualizationIntroIfNeededAsync();
         await RefreshNexusMetadataOnStartupAsync();
         if (_settings.AutoLinkNexusOnStartup)
         {
@@ -123,6 +132,72 @@ public partial class MainWindow : Window
                 showBusyCursor: false,
                 allowClearingUnmatchedExistingLinks: false);
         }
+    }
+
+    private async Task ShowVirtualizationIntroIfNeededAsync()
+    {
+        if (_settings.VirtualizationIntroShown)
+        {
+            return;
+        }
+
+        await Task.Yield();
+        var selfTest = _virtualizedGameImageBuilder.RunSelfTest(
+            _managerPaths.RootPath,
+            GetVirtualizationProbeSourcePath());
+        var dialog = new VirtualizationIntroDialog(new VirtualizationIntroState(
+            selfTest.IsSupported,
+            selfTest.LinkMode,
+            selfTest.Message))
+        {
+            Owner = IsVisible ? this : null
+        };
+        dialog.ShowDialog();
+        var answer = dialog.Result;
+
+        try
+        {
+            var enabled = answer == MessageBoxResult.Yes;
+            _settings = _settings with
+            {
+                VirtualizationEnabled = enabled,
+                VirtualizationIntroShown = true
+            };
+            _settingsService.Save(_managerPaths, _settings);
+
+            if (_currentProfile is not null)
+            {
+                _currentProfile = _currentProfile with
+                {
+                    Virtualization = _currentProfile.Virtualization with
+                    {
+                        UseExperimentalVirtualizedLaunch = enabled
+                    }
+                };
+                _profileService.SaveProfile(_managerPaths, _currentProfile);
+            }
+
+            RefreshSettingsStatus();
+            RefreshProfilePageStatus();
+            RefreshVirtualLaunchStatus();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, exception.Message, "Save virtualization settings failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private string? GetVirtualizationProbeSourcePath()
+    {
+        if (string.IsNullOrWhiteSpace(_settings.GameRootPath))
+        {
+            return null;
+        }
+
+        var validation = _gameValidator.Validate(_settings.GameRootPath);
+        return validation.IsValid
+            ? GameInstallation.FromRootPath(validation.GameRootPath).ExecutablePath
+            : null;
     }
 
     private async Task RefreshNexusMetadataOnStartupAsync()
@@ -147,8 +222,24 @@ public partial class MainWindow : Window
     private void MainWindow_SourceInitialized(object? sender, EventArgs e)
     {
         var handle = new WindowInteropHelper(this).Handle;
-        HwndSource.FromHwnd(handle)?.AddHook(WndProc);
+        _windowSource = HwndSource.FromHwnd(handle);
+        _windowSource?.AddHook(WndProc);
         EnableRoundedWindowCorners(handle);
+    }
+
+    private void MainWindow_Closed(object? sender, EventArgs e)
+    {
+        SourceInitialized -= MainWindow_SourceInitialized;
+        Closed -= MainWindow_Closed;
+        _windowSource?.RemoveHook(WndProc);
+        _windowSource = null;
+
+        _imageCache.Clear();
+        _imageCacheOrder.Clear();
+        _imageHttpClient.Dispose();
+        _nexusModDownloadService.Dispose();
+        _nexusModFilesService.Dispose();
+        _nexusMetadataCatalogService.Dispose();
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -539,7 +630,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!await ResolveMissingDependenciesBeforeDeployAsync())
+        if (!await ResolveMissingDependenciesBeforeDeployAsync("Deploy Anyway", "deploy again"))
         {
             return;
         }
@@ -590,7 +681,263 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<bool> ResolveMissingDependenciesBeforeDeployAsync()
+    private async void VirtualLaunchGame_Click(object sender, RoutedEventArgs e)
+    {
+        if (_currentProfile is null)
+        {
+            MessageBox.Show(this, "Load or create a profile before virtualized launch.", "Virtualized Launch", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!_settings.VirtualizationEnabled)
+        {
+            MessageBox.Show(this, "Enable Virtualized Launch in Settings first.", "Virtualized Launch", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!_currentProfile.Virtualization.UseExperimentalVirtualizedLaunch)
+        {
+            MessageBox.Show(this, "Enable virtualized launch for the active profile in Settings first.", "Virtualized Launch", MessageBoxButton.OK, MessageBoxImage.Information);
+            RefreshVirtualLaunchStatus();
+            return;
+        }
+
+        var installation = GetBepInExReadyGameOrShowMessage("starting a virtualized profile");
+        if (installation is null)
+        {
+            return;
+        }
+
+        if (!await ResolveMissingDependenciesBeforeDeployAsync("Launch Anyway", "launch the virtualized profile again"))
+        {
+            return;
+        }
+
+        SaveProfileFromRows();
+        var overlayPreview = BuildCurrentOverlayPreview();
+        if (overlayPreview is null)
+        {
+            return;
+        }
+
+        if (overlayPreview.MissingSources.Count > 0)
+        {
+            MessageBox.Show(this, "Virtualized launch cannot continue because one or more source files are missing.", "Virtualized Launch", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            var preLaunchCleanResults = CleanManagedDeploymentsBeforeVirtualLaunch(_currentProfile.Id, overlayPreview.GameRootPath);
+            if (preLaunchCleanResults.Any(result => result.PreservedFiles > 0 || result.Warnings.Count > 0))
+            {
+                var answer = MessageBox.ShowCustom(
+                    this,
+                    BuildVirtualLaunchCleanupWarningMessage(preLaunchCleanResults),
+                    "Virtualized Launch",
+                    MessageBoxImage.Warning,
+                    new[]
+                    {
+                        new DarkMessageBoxButton("Launch Anyway", MessageBoxResult.Yes, Primary: true),
+                        new DarkMessageBoxButton("Cancel", MessageBoxResult.Cancel, IsCancel: true)
+                    });
+                if (answer != MessageBoxResult.Yes)
+                {
+                    RefreshDeployStatus();
+                    RefreshVirtualLaunchStatus();
+                    return;
+                }
+            }
+
+            var progress = new VirtualLaunchProgressDialog
+            {
+                Owner = IsVisible ? this : null
+            };
+            progress.Show();
+            try
+            {
+                await UpdateVirtualLaunchProgressAsync(progress, "Writing launch plan...");
+                var planPath = _virtualizedLaunchPlanWriter.Save(_managerPaths, _currentProfile, overlayPreview);
+
+                await UpdateVirtualLaunchProgressAsync(progress, "Checking virtualized launch plan...");
+                var validation = _virtualizedLaunchPlanValidator.ValidateFile(planPath);
+                if (validation.HasErrors)
+                {
+                    progress.Close();
+                    RefreshVirtualLaunchStatus();
+                    MessageBox.Show(
+                        this,
+                        BuildVirtualLaunchValidationMessage(validation, planPath),
+                        "Virtualized launch invalid",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                    return;
+                }
+
+                var plan = _virtualizedLaunchPlanValidator.Load(planPath);
+
+                await UpdateVirtualLaunchProgressAsync(progress, "Saving profile config state...");
+                SyncVirtualizedRuntimeStateToProfile(_currentProfile, Path.Combine(plan.ProfileRuntimePath, "game"));
+
+                await UpdateVirtualLaunchProgressAsync(progress, "Building linked runtime image...");
+                var image = await Task.Run(() => _virtualizedGameImageBuilder.Build(plan));
+
+                await UpdateVirtualLaunchProgressAsync(progress, "Starting game...");
+                progress.Close();
+                StartVirtualizedGame(_currentProfile, image);
+            }
+            catch
+            {
+                progress.Close();
+                throw;
+            }
+
+            RefreshVirtualLaunchStatus();
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or InvalidOperationException
+            or System.ComponentModel.Win32Exception)
+        {
+            MessageBox.Show(this, exception.Message, "Virtualized launch failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private static async Task UpdateVirtualLaunchProgressAsync(VirtualLaunchProgressDialog progress, string status)
+    {
+        progress.SetStatus(status);
+        await progress.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+    }
+
+    private IReadOnlyList<ProfileDeployResult> CleanManagedDeploymentsBeforeVirtualLaunch(string activeProfileId, string gameRootPath)
+    {
+        var results = new List<ProfileDeployResult>();
+        results.AddRange(_profileDeployService.CleanOtherProfiles(_managerPaths, activeProfileId, gameRootPath));
+
+        var activeManifest = _profileDeployService.LoadManifest(_managerPaths, activeProfileId);
+        if (activeManifest is not null && PathsEqual(activeManifest.GameRootPath, gameRootPath))
+        {
+            results.Add(_profileDeployService.Clean(_managerPaths, activeProfileId));
+        }
+
+        if (results.Count > 0)
+        {
+            RefreshDeployStatus();
+        }
+
+        return results
+            .Where(result => result.DeletedFiles > 0 || result.PreservedFiles > 0 || result.Warnings.Count > 0)
+            .ToArray();
+    }
+
+    private void StartVirtualizedGame(ModProfile profile, VirtualizedGameImageBuildResult image)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = image.VirtualGameExecutablePath,
+            WorkingDirectory = image.VirtualGameRootPath,
+            UseShellExecute = false
+        };
+
+        var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("The virtualized game process could not be started.");
+        var syncGate = new object();
+        var syncCompleted = false;
+        void SyncOnce()
+        {
+            lock (syncGate)
+            {
+                if (syncCompleted)
+                {
+                    return;
+                }
+
+                syncCompleted = true;
+            }
+
+            try
+            {
+                SyncVirtualizedRuntimeStateToProfile(profile, image.VirtualGameRootPath);
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException
+                or InvalidOperationException
+                or NotSupportedException)
+            {
+                Debug.WriteLine($"Virtualized runtime state sync failed: {exception}");
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+
+        process.EnableRaisingEvents = true;
+        process.Exited += (_, _) => SyncOnce();
+        if (process.HasExited)
+        {
+            SyncOnce();
+        }
+    }
+
+    private void SyncVirtualizedRuntimeStateToProfile(ModProfile profile, string virtualGameRootPath)
+    {
+        if (!profile.Virtualization.RedirectWritesToProfileState)
+        {
+            return;
+        }
+
+        var managerRoot = EnsureTrailingSeparator(Path.GetFullPath(_managerPaths.RootPath));
+        var virtualGameRoot = EnsureTrailingSeparator(Path.GetFullPath(virtualGameRootPath));
+        var profileBepInExRoot = EnsureTrailingSeparator(Path.GetFullPath(profile.ProfileBepInExPath));
+        if (!IsInsideRoot(virtualGameRoot, managerRoot)
+            || !IsInsideRoot(profileBepInExRoot, managerRoot))
+        {
+            throw new InvalidOperationException("Virtualized state sync resolved outside the manager storage folder.");
+        }
+
+        CopyChangedDirectoryFiles(
+            Path.Combine(virtualGameRoot, "BepInEx", "config"),
+            Path.Combine(profileBepInExRoot, "config"));
+    }
+
+    private static void CopyChangedDirectoryFiles(string sourceDirectoryPath, string targetDirectoryPath)
+    {
+        if (!Directory.Exists(sourceDirectoryPath))
+        {
+            return;
+        }
+
+        var sourceRoot = EnsureTrailingSeparator(Path.GetFullPath(sourceDirectoryPath));
+        var targetRoot = EnsureTrailingSeparator(Path.GetFullPath(targetDirectoryPath));
+        Directory.CreateDirectory(targetRoot);
+
+        foreach (var sourcePath in Directory.EnumerateFiles(sourceRoot, "*", SearchOption.AllDirectories))
+        {
+            var relativePath = Path.GetRelativePath(sourceRoot, sourcePath);
+            var targetPath = Path.GetFullPath(Path.Combine(targetRoot, relativePath));
+            if (!IsInsideRoot(targetPath, targetRoot))
+            {
+                throw new InvalidOperationException($"Virtualized state sync target escaped the profile folder: {relativePath}");
+            }
+
+            if (File.Exists(targetPath))
+            {
+                var sourceInfo = new FileInfo(sourcePath);
+                var targetInfo = new FileInfo(targetPath);
+                if (sourceInfo.Length == targetInfo.Length
+                    && sourceInfo.LastWriteTimeUtc == targetInfo.LastWriteTimeUtc)
+                {
+                    continue;
+                }
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+            File.Copy(sourcePath, targetPath, overwrite: true);
+        }
+    }
+
+    private async Task<bool> ResolveMissingDependenciesBeforeDeployAsync(string continueButtonText, string retryActionText)
     {
         var report = await BuildMissingDependencyReportAsync();
         if (report.Issues.Count == 0)
@@ -610,7 +957,7 @@ public partial class MainWindow : Window
                 MessageBoxImage.Warning,
                 new[]
                 {
-                    new DarkMessageBoxButton("Deploy Anyway", MessageBoxResult.Yes, Primary: true),
+                    new DarkMessageBoxButton(continueButtonText, MessageBoxResult.Yes, Primary: true),
                     new DarkMessageBoxButton("Cancel", MessageBoxResult.Cancel, IsCancel: true)
                 });
             return missingOnlyAnswer == MessageBoxResult.Yes;
@@ -626,13 +973,13 @@ public partial class MainWindow : Window
             new[]
             {
                 new DarkMessageBoxButton("Fix Dependencies", MessageBoxResult.Yes, Primary: true),
-                new DarkMessageBoxButton("Deploy Anyway", MessageBoxResult.No),
+                new DarkMessageBoxButton(continueButtonText, MessageBoxResult.No),
                 new DarkMessageBoxButton("Cancel", MessageBoxResult.Cancel, IsCancel: true)
             });
 
         if (answer == MessageBoxResult.Yes)
         {
-            await EnableOrDownloadMissingDependencyCandidatesAsync(report);
+            await EnableOrDownloadMissingDependencyCandidatesAsync(report, retryActionText);
             return false;
         }
 
@@ -882,7 +1229,7 @@ public partial class MainWindow : Window
             .ToLowerInvariant();
     }
 
-    private async Task EnableOrDownloadMissingDependencyCandidatesAsync(MissingDependencyReport report)
+    private async Task EnableOrDownloadMissingDependencyCandidatesAsync(MissingDependencyReport report, string retryActionText)
     {
         var installedProviderIds = report.Issues
             .SelectMany(issue => issue.InstalledProviders)
@@ -898,7 +1245,7 @@ public partial class MainWindow : Window
                 : $"Enabled installed dependency providers: {string.Join(", ", installedProviderIds.Select(provider => provider.ModName))}.";
             MessageBox.Show(
                 this,
-                $"{enabledNames}\n\nReview the profile, then deploy again.",
+                $"{enabledNames}\n\nReview the profile, then {retryActionText}.",
                 "Missing dependencies",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -968,7 +1315,7 @@ public partial class MainWindow : Window
             InstallModArchives(downloadedArchives, downloadFailures);
             MessageBox.Show(
                 this,
-                "Dependency candidates were downloaded and installed.\n\nReview the active profile, then deploy again.",
+                $"Dependency candidates were downloaded and installed.\n\nReview the active profile, then {retryActionText}.",
                 "Missing dependencies",
                 MessageBoxButton.OK,
                 downloadFailures.Count == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
@@ -1646,7 +1993,9 @@ public partial class MainWindow : Window
             LastCheckedAt = DateTimeOffset.UtcNow
         };
 
-        if (!result.IsUpdateAvailable && string.IsNullOrWhiteSpace(result.ErrorMessage))
+        if (result.Status.Equals("Latest version", StringComparison.OrdinalIgnoreCase)
+            && !result.IsUpdateAvailable
+            && string.IsNullOrWhiteSpace(result.ErrorMessage))
         {
             source = source with
             {
@@ -2304,14 +2653,18 @@ public partial class MainWindow : Window
             image.StreamSource = memory;
             image.EndInit();
             image.Freeze();
-            _imageCache[uri.AbsoluteUri] = image;
+            CacheImage(uri.AbsoluteUri, image);
 
             if (requestId == _nexusBrowserImageRequestId)
             {
                 NexusCatalogImage.Source = image;
             }
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or NotSupportedException)
+        catch (Exception exception) when (exception is HttpRequestException
+            or TaskCanceledException
+            or IOException
+            or NotSupportedException
+            or ObjectDisposedException)
         {
         }
     }
@@ -3976,6 +4329,7 @@ public partial class MainWindow : Window
             var row = _mods.FirstOrDefault(mod => mod.Id.Equals(result.ModId, StringComparison.OrdinalIgnoreCase));
             var previousStatus = row?.UpdateStatus;
             NexusModFilesLoadResult? filesResult = null;
+            var handledWithoutFiles = false;
             var fingerprint = BuildNexusFilesFingerprint(result.GameDomain!, result.NexusModId!.Value, result);
             if (row is not null)
             {
@@ -4018,6 +4372,27 @@ public partial class MainWindow : Window
 
                 if (filesResult is null)
                 {
+                    if (result.IsUpdateAvailable)
+                    {
+                        var unconfirmed = result with
+                        {
+                            Status = "Needs file check",
+                            IsUpdateAvailable = false
+                        };
+                        var unconfirmedResultIndex = Array.FindIndex(
+                            confirmedResults,
+                            item => item.ModId.Equals(result.ModId, StringComparison.OrdinalIgnoreCase));
+                        if (unconfirmedResultIndex >= 0)
+                        {
+                            confirmedResults[unconfirmedResultIndex] = unconfirmed;
+                        }
+
+                        corrected++;
+                        handledWithoutFiles = true;
+                        PersistNexusUpdateCheck(entry, unconfirmed, manifest);
+                        ApplyUpdateResultToRow(unconfirmed);
+                    }
+
                     continue;
                 }
 
@@ -4049,7 +4424,7 @@ public partial class MainWindow : Window
             }
             finally
             {
-                if (row is not null && filesResult is null)
+                if (row is not null && filesResult is null && !handledWithoutFiles)
                 {
                     row.UpdateStatus = previousStatus ?? BuildUpdateStatusText(result);
                     ModsListView.Items.Refresh();
@@ -4965,6 +5340,7 @@ public partial class MainWindow : Window
         RefreshProfileSummary();
         RefreshProfilePageStatus();
         RefreshDeployStatus();
+        RefreshSettingsStatus();
         UpdateToggleAllModsButton();
         ModsListView.SelectedIndex = _mods.Count > 0 ? 0 : -1;
         if (_mods.Count == 0)
@@ -5152,6 +5528,7 @@ public partial class MainWindow : Window
             WarningCountText.Text = "0";
             ConflictCountText.Text = "0";
             OverlayListView.ItemsSource = Array.Empty<OverlayRow>();
+            RefreshVirtualLaunchStatus();
             return;
         }
 
@@ -5177,6 +5554,7 @@ public partial class MainWindow : Window
             .Select(OverlayRow.FromEntry)
             .ToArray();
         RefreshDeployStatus();
+        RefreshVirtualLaunchStatus();
     }
 
     private string BuildActiveProfileDeployText(string activeProfileId)
@@ -5228,10 +5606,19 @@ public partial class MainWindow : Window
         ProfileDetailsListBox.ItemsSource = new[]
         {
             $"ID: {_currentProfile.Id}",
-            $"Profile BepInEx: {_currentProfile.ProfileBepInExPath}",
+            $"Profile BepInEx state: {_currentProfile.ProfileBepInExPath}",
             manifest is null
                 ? "Deploy state: clean"
                 : $"Deploy state: {manifest.Files.Count} managed files, updated {manifest.UpdatedAt.LocalDateTime:g}",
+            _settings.VirtualizationEnabled
+                ? "Virtual launch: enabled globally"
+                : "Virtual launch: disabled globally",
+            _currentProfile.Virtualization.UseExperimentalVirtualizedLaunch
+                ? "Virtual launch: enabled for this profile"
+                : "Virtual launch: disabled for this profile",
+            _currentProfile.Virtualization.RedirectWritesToProfileState
+                ? "Virtual writes: profile state"
+                : "Virtual writes: game default",
             $"Manager storage: {_managerPaths.RootPath}"
         };
     }
@@ -5590,7 +5977,7 @@ public partial class MainWindow : Window
             image.EndInit();
             image.Freeze();
 
-            _imageCache[uri.AbsoluteUri] = image;
+            CacheImage(uri.AbsoluteUri, image);
             if (requestId == _selectedImageRequestId)
             {
                 target.Source = image;
@@ -5600,12 +5987,29 @@ public partial class MainWindow : Window
             or IOException
             or InvalidOperationException
             or HttpRequestException
-            or TaskCanceledException)
+            or TaskCanceledException
+            or ObjectDisposedException)
         {
             if (requestId == _selectedImageRequestId)
             {
                 target.Source = null;
             }
+        }
+    }
+
+    private void CacheImage(string cacheKey, BitmapImage image)
+    {
+        var isNewEntry = !_imageCache.ContainsKey(cacheKey);
+        _imageCache[cacheKey] = image;
+        if (isNewEntry)
+        {
+            _imageCacheOrder.Enqueue(cacheKey);
+        }
+
+        while (_imageCache.Count > MaxImageCacheEntries && _imageCacheOrder.Count > 0)
+        {
+            var oldestKey = _imageCacheOrder.Dequeue();
+            _imageCache.Remove(oldestKey);
         }
     }
 
@@ -5655,6 +6059,11 @@ public partial class MainWindow : Window
         {
             AutoLinkNexusOnStartupCheckBox.IsChecked = _settings.AutoLinkNexusOnStartup;
             ShowAdvancedModColumnsCheckBox.IsChecked = _settings.ShowAdvancedModColumns;
+            VirtualizationEnabledCheckBox.IsChecked = _settings.VirtualizationEnabled;
+            ExperimentalVirtualizedLaunchCheckBox.IsEnabled = _settings.VirtualizationEnabled && _currentProfile is not null;
+            ExperimentalVirtualizedLaunchCheckBox.IsChecked = _currentProfile?.Virtualization.UseExperimentalVirtualizedLaunch == true;
+            RedirectVirtualWritesCheckBox.IsEnabled = _settings.VirtualizationEnabled && _currentProfile is not null;
+            RedirectVirtualWritesCheckBox.IsChecked = _currentProfile?.Virtualization.RedirectWritesToProfileState ?? true;
             ApplyModTableColumnSettings();
             NexusGameDomainTextBox.Text = _settings.NexusGameDomain;
             var hasKey = _secureSecretStore.HasNexusApiKey(_managerPaths);
@@ -5665,6 +6074,7 @@ public partial class MainWindow : Window
                 ? "AccentBrush"
                 : "MutedTextBrush");
             RefreshNexusMetadataStatusText();
+            RefreshVirtualLaunchStatus();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -5821,6 +6231,112 @@ public partial class MainWindow : Window
         }
     }
 
+    private void VirtualizationEnabledCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isLoadingSettings)
+        {
+            return;
+        }
+
+        var enabled = VirtualizationEnabledCheckBox.IsChecked == true;
+        if (_settings.VirtualizationEnabled == enabled)
+        {
+            return;
+        }
+
+        try
+        {
+            _settings = _settings with { VirtualizationEnabled = enabled };
+            _settingsService.Save(_managerPaths, _settings);
+            RefreshSettingsStatus();
+            RefreshProfilePageStatus();
+            RefreshVirtualLaunchStatus();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, exception.Message, "Save settings failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            RefreshSettingsStatus();
+        }
+    }
+
+    private void ExperimentalVirtualizedLaunchCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isLoadingSettings)
+        {
+            return;
+        }
+
+        if (_currentProfile is null)
+        {
+            RefreshSettingsStatus();
+            return;
+        }
+
+        var enabled = ExperimentalVirtualizedLaunchCheckBox.IsChecked == true;
+        if (_currentProfile.Virtualization.UseExperimentalVirtualizedLaunch == enabled)
+        {
+            return;
+        }
+
+        try
+        {
+            _currentProfile = _currentProfile with
+            {
+                Virtualization = _currentProfile.Virtualization with
+                {
+                    UseExperimentalVirtualizedLaunch = enabled
+                }
+            };
+            _profileService.SaveProfile(_managerPaths, _currentProfile);
+            RefreshVirtualLaunchStatus();
+            RefreshProfilePageStatus();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, exception.Message, "Save profile settings failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            RefreshSettingsStatus();
+        }
+    }
+
+    private void RedirectVirtualWritesCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isLoadingSettings)
+        {
+            return;
+        }
+
+        if (_currentProfile is null)
+        {
+            RefreshSettingsStatus();
+            return;
+        }
+
+        var enabled = RedirectVirtualWritesCheckBox.IsChecked == true;
+        if (_currentProfile.Virtualization.RedirectWritesToProfileState == enabled)
+        {
+            return;
+        }
+
+        try
+        {
+            _currentProfile = _currentProfile with
+            {
+                Virtualization = _currentProfile.Virtualization with
+                {
+                    RedirectWritesToProfileState = enabled
+                }
+            };
+            _profileService.SaveProfile(_managerPaths, _currentProfile);
+            RefreshVirtualLaunchStatus();
+            RefreshProfilePageStatus();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, exception.Message, "Save profile settings failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            RefreshSettingsStatus();
+        }
+    }
+
     private string? GetConfiguredNexusApiKey()
     {
         try
@@ -5870,6 +6386,7 @@ public partial class MainWindow : Window
             SetStatus(GameStatusText, "Game: not configured", "WarningBrush");
             SetStatus(BepInExStatusText, "BepInEx: waiting for a valid game folder", "MutedTextBrush");
             BepInExDetailText.Text = $"Expected BepInEx {release.Version}";
+            RefreshVirtualLaunchStatus();
             return;
         }
 
@@ -5880,6 +6397,7 @@ public partial class MainWindow : Window
             SetStatus(GameStatusText, $"Game: invalid folder. Missing: {string.Join(", ", validation.MissingMarkers)}", "DangerBrush");
             SetStatus(BepInExStatusText, "BepInEx: select a valid game folder first", "MutedTextBrush");
             BepInExDetailText.Text = $"Expected BepInEx {release.Version}";
+            RefreshVirtualLaunchStatus();
             return;
         }
 
@@ -5892,7 +6410,8 @@ public partial class MainWindow : Window
         if (state.IsComplete)
         {
             SetStatus(BepInExStatusText, "BepInEx: installed", "AccentBrush");
-            BepInExDetailText.Text = $"Profile BepInEx is enabled. Expected version: {release.Version}.";
+            BepInExDetailText.Text = $"Game BepInEx is installed. Expected version: {release.Version}.";
+            RefreshVirtualLaunchStatus();
             return;
         }
 
@@ -5900,11 +6419,13 @@ public partial class MainWindow : Window
         {
             SetStatus(BepInExStatusText, "BepInEx: incomplete, repair recommended", "WarningBrush");
             BepInExDetailText.Text = $"Missing: {string.Join(", ", state.MissingMarkers)}";
+            RefreshVirtualLaunchStatus();
             return;
         }
 
         SetStatus(BepInExStatusText, "BepInEx: not installed", "WarningBrush");
         BepInExDetailText.Text = $"Install from ZIP or download {release.ArchiveFileName}.";
+        RefreshVirtualLaunchStatus();
     }
 
     private void RefreshDeployStatus()
@@ -5940,6 +6461,79 @@ public partial class MainWindow : Window
         DeployDetailText.Text = $"Last updated {manifest.UpdatedAt.LocalDateTime:g}.{gameRootNote}";
     }
 
+    private void RefreshVirtualLaunchStatus()
+    {
+        if (_currentProfile is null)
+        {
+            VirtualLaunchButton.IsEnabled = false;
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: no active profile", "MutedTextBrush");
+            return;
+        }
+
+        if (!_settings.VirtualizationEnabled)
+        {
+            VirtualLaunchButton.IsEnabled = false;
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: disabled in Settings", "MutedTextBrush");
+            return;
+        }
+
+        if (!_currentProfile.Virtualization.UseExperimentalVirtualizedLaunch)
+        {
+            VirtualLaunchButton.IsEnabled = false;
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: disabled for this profile", "MutedTextBrush");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_settings.GameRootPath))
+        {
+            VirtualLaunchButton.IsEnabled = false;
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: waiting for a game folder", "WarningBrush");
+            return;
+        }
+
+        var validation = _gameValidator.Validate(_settings.GameRootPath);
+        if (!validation.IsValid)
+        {
+            VirtualLaunchButton.IsEnabled = false;
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: invalid game folder", "DangerBrush");
+            return;
+        }
+
+        var state = _bepInExProbe.Probe(validation.GameRootPath);
+        if (!state.IsComplete)
+        {
+            VirtualLaunchButton.IsEnabled = false;
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: BepInEx is required in the game folder", "WarningBrush");
+            return;
+        }
+
+        var overlayPreview = BuildCurrentOverlayPreview();
+        if (overlayPreview is null)
+        {
+            VirtualLaunchButton.IsEnabled = false;
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: overlay unavailable", "WarningBrush");
+            return;
+        }
+
+        if (overlayPreview.MissingSources.Count > 0)
+        {
+            VirtualLaunchButton.IsEnabled = false;
+            SetStatus(VirtualLaunchStatusText, $"Virtual launch: {overlayPreview.MissingSources.Count} missing source files", "DangerBrush");
+            return;
+        }
+
+        VirtualLaunchButton.IsEnabled = true;
+        var conflictText = overlayPreview.Conflicts.Count == 1
+            ? "1 conflict"
+            : $"{overlayPreview.Conflicts.Count} conflicts";
+        SetStatus(
+            VirtualLaunchStatusText,
+            $"Virtual launch: {overlayPreview.ActiveEntries.Count} files mapped, {conflictText}",
+            overlayPreview.Conflicts.Count == 0 && overlayPreview.Warnings.Count == 0
+                ? "AccentBrush"
+                : "WarningBrush");
+    }
+
     private GameInstallation? GetValidGameInstallationOrShowMessage()
     {
         if (string.IsNullOrWhiteSpace(_settings.GameRootPath))
@@ -5961,6 +6555,11 @@ public partial class MainWindow : Window
 
     private GameInstallation? GetDeploymentReadyGameOrShowMessage()
     {
+        return GetBepInExReadyGameOrShowMessage("deploying profile files");
+    }
+
+    private GameInstallation? GetBepInExReadyGameOrShowMessage(string actionDescription)
+    {
         var installation = GetValidGameInstallationOrShowMessage();
         if (installation is null)
         {
@@ -5971,7 +6570,7 @@ public partial class MainWindow : Window
         if (!state.IsComplete)
         {
             RefreshSetupStatus();
-            MessageBox.Show(this, "Install or repair BepInEx before deploying profile files.", "BepInEx required", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, $"Install or repair BepInEx before {actionDescription}.", "BepInEx required", MessageBoxButton.OK, MessageBoxImage.Warning);
             return null;
         }
 
@@ -6054,6 +6653,119 @@ public partial class MainWindow : Window
         MessageBox.Show(this, message, title, MessageBoxButton.OK, warnings.Length == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
     }
 
+    private static string BuildVirtualLaunchStartedMessage(
+        ModProfile profile,
+        OverlayPreview overlayPreview,
+        string planPath,
+        VirtualizedGameImageBuildResult image,
+        VirtualizedLaunchPlanValidationResult validation)
+    {
+        var validationWarnings = validation.Issues
+            .Where(issue => issue.Severity == VirtualizedLaunchPlanIssueSeverity.Warning)
+            .ToArray();
+        var lines = new List<string>
+        {
+            "Virtualized launch started.",
+            "The game is running from a linked profile runtime image.",
+            string.Empty,
+            $"Profile: {overlayPreview.ProfileId}",
+            $"Mapped files: {overlayPreview.ActiveEntries.Count}",
+            $"Linked game files: {image.GameFilesLinked}",
+            $"Linked mod files: {image.OverlayFilesLinked}",
+            $"Runtime folders: {image.DirectoriesCreated}",
+            $"Conflicts: {overlayPreview.Conflicts.Count}",
+            $"Warnings: {overlayPreview.Warnings.Count + image.Warnings.Count}",
+            $"Plan validation: {(validationWarnings.Length == 0 ? "passed" : $"{validationWarnings.Length} warnings")}",
+            $"Write redirect: {(profile.Virtualization.RedirectWritesToProfileState ? "profile state" : "game default")}",
+            $"Virtual game root: {image.VirtualGameRootPath}",
+            $"Plan: {planPath}",
+            string.Empty,
+            "BepInEx stays installed in the real game folder. Mod files remain in manager storage and are linked for this launch."
+        };
+
+        if (overlayPreview.Conflicts.Count > 0)
+        {
+            lines.Add(string.Empty);
+            lines.AddRange(overlayPreview.Conflicts
+                .Take(5)
+                .Select(conflict => $"Conflict winner: {conflict.TargetRelativePath} <- {conflict.Winner.OwningModId}"));
+        }
+
+        if (validationWarnings.Length > 0)
+        {
+            lines.Add(string.Empty);
+            lines.AddRange(validationWarnings
+                .Take(6)
+                .Select(issue => $"{issue.Code}: {issue.Message}"));
+        }
+
+        if (image.Warnings.Count > 0)
+        {
+            lines.Add(string.Empty);
+            lines.AddRange(image.Warnings
+                .Take(6)
+                .Select(warning => $"Image warning: {warning}"));
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static string BuildVirtualLaunchCleanupWarningMessage(IReadOnlyList<ProfileDeployResult> cleanResults)
+    {
+        var deletedFiles = cleanResults.Sum(result => result.DeletedFiles);
+        var preservedFiles = cleanResults.Sum(result => result.PreservedFiles);
+        var warnings = cleanResults
+            .SelectMany(result => result.Warnings.Select(warning => $"{result.ProfileId}: {warning}"))
+            .Take(8)
+            .ToArray();
+
+        var lines = new List<string>
+        {
+            "UCU cleaned previously deployed manager files before virtualized launch.",
+            string.Empty,
+            $"Deleted managed files: {deletedFiles}",
+            $"Preserved changed files: {preservedFiles}",
+            string.Empty,
+            "Preserved files may still affect the virtualized game image because they are currently present in the real game folder."
+        };
+
+        if (warnings.Length > 0)
+        {
+            lines.Add(string.Empty);
+            lines.AddRange(warnings);
+        }
+
+        lines.Add(string.Empty);
+        lines.Add("Launch anyway?");
+        return string.Join("\n", lines);
+    }
+
+    private static string BuildVirtualLaunchValidationMessage(
+        VirtualizedLaunchPlanValidationResult validation,
+        string planPath)
+    {
+        var lines = new List<string>
+        {
+            "Virtualized launch plan was written, but validation found blocking errors.",
+            string.Empty,
+            $"Plan: {planPath}",
+            string.Empty
+        };
+
+        lines.AddRange(validation.Issues
+            .Where(issue => issue.Severity == VirtualizedLaunchPlanIssueSeverity.Error)
+            .Take(10)
+            .Select(issue => $"{issue.Code}: {issue.Message}"));
+
+        var remaining = validation.Issues.Count(issue => issue.Severity == VirtualizedLaunchPlanIssueSeverity.Error) - 10;
+        if (remaining > 0)
+        {
+            lines.Add($"... {remaining} more errors");
+        }
+
+        return string.Join("\n", lines);
+    }
+
     private static string BuildBlockedProfileCleanupMessage(IReadOnlyList<ProfileDeployResult> blockedCleanResults)
     {
         var warnings = blockedCleanResults
@@ -6098,7 +6810,8 @@ public partial class MainWindow : Window
 
     private static ManagerPaths ResolveManagerPaths()
     {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        var applicationDirectory = new DirectoryInfo(AppContext.BaseDirectory);
+        var directory = applicationDirectory;
         while (directory is not null)
         {
             var devDataPath = Path.Combine(directory.FullName, "dev-data");
@@ -6110,13 +6823,21 @@ public partial class MainWindow : Window
             directory = directory.Parent;
         }
 
-        return ManagerPaths.FromApplicationDirectory();
+        return ManagerPaths.FromApplicationDataDirectory(applicationDirectory.FullName);
     }
 
     private static bool PathsEqual(string firstPath, string secondPath)
     {
         return EnsureTrailingSeparator(Path.GetFullPath(firstPath))
             .Equals(EnsureTrailingSeparator(Path.GetFullPath(secondPath)), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsInsideRoot(string candidatePath, string rootPath)
+    {
+        var root = EnsureTrailingSeparator(Path.GetFullPath(rootPath));
+        var candidate = Path.GetFullPath(candidatePath);
+        return candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase)
+            || candidate.Equals(root.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
     }
 
     private static string EnsureTrailingSeparator(string path)
@@ -6595,7 +7316,14 @@ public partial class MainWindow : Window
                 entry.Status,
                 GetDisplayKind(entry),
                 entry.TargetRelativePath,
-                entry.OwningModId);
+                GetDisplayOwner(entry.OwningModId));
+        }
+
+        private static string GetDisplayOwner(string ownerId)
+        {
+            return ownerId.Equals("__profile_state__", StringComparison.OrdinalIgnoreCase)
+                ? "Profile State"
+                : ownerId;
         }
 
         private static string GetDisplayKind(OverlayPreviewEntry entry)

@@ -4,7 +4,7 @@ using UcuModManager.Core.Storage;
 
 namespace UcuModManager.Core.Mods;
 
-public sealed class NexusMetadataCatalogService
+public sealed class NexusMetadataCatalogService : IDisposable
 {
     public static readonly Uri DefaultCatalogUri = new("https://raw.githubusercontent.com/jimmyking9999999/Metadata-generator/main/nexusmods.json");
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -15,12 +15,14 @@ public sealed class NexusMetadataCatalogService
     private static readonly TimeSpan CacheFreshness = TimeSpan.FromHours(6);
 
     private readonly HttpClient _httpClient;
+    private readonly bool _ownsHttpClient;
     private IReadOnlyList<NexusMetadataCatalogEntry>? _memoryCache;
     private NexusMetadataCatalogStatus? _memoryCacheStatus;
 
     public NexusMetadataCatalogService(HttpClient? httpClient = null)
     {
         _httpClient = httpClient ?? new HttpClient();
+        _ownsHttpClient = httpClient is null;
     }
 
     public async Task<NexusMetadataCatalogLoadResult> LoadAsync(
@@ -88,6 +90,16 @@ public sealed class NexusMetadataCatalogService
             throw new InvalidOperationException(
                 "Could not load Nexus metadata catalog, and no cached catalog is available.",
                 exception);
+        }
+    }
+
+    public void Dispose()
+    {
+        _memoryCache = null;
+        _memoryCacheStatus = null;
+        if (_ownsHttpClient)
+        {
+            _httpClient.Dispose();
         }
     }
 
