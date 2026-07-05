@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace UcuModManager.App;
 
@@ -44,13 +45,120 @@ public static class DarkMessageBox
         MessageBoxImage icon,
         IReadOnlyList<DarkMessageBoxButton>? customButtons = null)
     {
+        var previousCursor = Mouse.OverrideCursor;
+        var ownerWindow = owner?.IsVisible == true
+            ? owner
+            : Application.Current.MainWindow?.IsVisible == true
+                ? Application.Current.MainWindow
+                : null;
+        var ownerInitialState = ownerWindow?.WindowState;
         var dialog = new DarkMessageDialog(messageBoxText, caption, button, icon, customButtons)
         {
-            Owner = owner?.IsVisible == true ? owner : null
+            Cursor = Cursors.Arrow
         };
+        PositionDialogOverOwner(dialog, ownerWindow);
 
-        dialog.ShowDialog();
-        return dialog.Result;
+        try
+        {
+            Mouse.OverrideCursor = null;
+            return ShowOwnedModal(dialog, ownerWindow);
+        }
+        finally
+        {
+            Mouse.OverrideCursor = previousCursor;
+            RestoreOwnerWindowIfNeeded(ownerWindow, ownerInitialState);
+        }
+    }
+
+    private static void PositionDialogOverOwner(Window dialog, Window? owner)
+    {
+        if (owner is null || !owner.IsVisible || owner.WindowState == WindowState.Minimized)
+        {
+            dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            return;
+        }
+
+        dialog.WindowStartupLocation = WindowStartupLocation.Manual;
+        dialog.Loaded += (_, _) =>
+        {
+            var targetLeft = owner.Left + (owner.ActualWidth - dialog.ActualWidth) / 2;
+            var targetTop = owner.Top + (owner.ActualHeight - dialog.ActualHeight) / 2;
+            var workArea = SystemParameters.WorkArea;
+
+            dialog.Left = Math.Clamp(targetLeft, workArea.Left, Math.Max(workArea.Left, workArea.Right - dialog.ActualWidth));
+            dialog.Top = Math.Clamp(targetTop, workArea.Top, Math.Max(workArea.Top, workArea.Bottom - dialog.ActualHeight));
+        };
+    }
+
+    private static MessageBoxResult ShowOwnedModal(DarkMessageDialog dialog, Window? owner)
+    {
+        var frame = new DispatcherFrame();
+        var shouldRestoreOwnerEnabled = owner?.IsEnabled == true;
+
+        void OnClosed(object? sender, EventArgs args)
+        {
+            frame.Continue = false;
+        }
+
+        dialog.Closed += OnClosed;
+        try
+        {
+            if (shouldRestoreOwnerEnabled)
+            {
+                owner!.IsEnabled = false;
+            }
+
+            dialog.Show();
+            dialog.Activate();
+            Dispatcher.PushFrame(frame);
+            return dialog.Result;
+        }
+        finally
+        {
+            dialog.Closed -= OnClosed;
+            if (shouldRestoreOwnerEnabled && owner is { IsVisible: true })
+            {
+                owner.IsEnabled = true;
+            }
+        }
+    }
+
+    private static void RestoreOwnerWindowIfNeeded(Window? owner, WindowState? initialState)
+    {
+        if (owner is null
+            || !owner.IsVisible
+            || initialState is WindowState.Minimized)
+        {
+            return;
+        }
+
+        RestoreOwnerWindowIfMinimized(owner);
+        var timer = new DispatcherTimer(
+            TimeSpan.FromMilliseconds(120),
+            DispatcherPriority.Background,
+            (_, _) => RestoreOwnerWindowIfMinimized(owner),
+            owner.Dispatcher);
+        timer.Tick += (_, _) => timer.Stop();
+        timer.Start();
+    }
+
+    private static void RestoreOwnerWindowIfMinimized(Window owner)
+    {
+        owner.Dispatcher.BeginInvoke(() =>
+        {
+            if (!owner.IsVisible)
+            {
+                return;
+            }
+
+            if (owner.WindowState != WindowState.Minimized)
+            {
+                return;
+            }
+
+            owner.WindowState = WindowState.Normal;
+            owner.Activate();
+        });
     }
 }
 
@@ -87,6 +195,14 @@ public sealed class DarkMessageDialog : Window
 
         Content = BuildContent(message, caption, icon);
         Loaded += (_, _) => _defaultButton?.Focus();
+        KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                e.Handled = true;
+                CloseWith(GetCloseResult());
+            }
+        };
     }
 
     public MessageBoxResult Result => _result == MessageBoxResult.None
@@ -288,7 +404,7 @@ public sealed class DarkMessageDialog : Window
             },
             _ => new[]
             {
-                ("OK", MessageBoxResult.OK, true, true)
+                ("OK", MessageBoxResult.OK, true, false)
             }
         };
     }
@@ -382,7 +498,6 @@ public sealed class DarkMessageDialog : Window
     private void CloseWith(MessageBoxResult result)
     {
         _result = result;
-        DialogResult = true;
         Close();
     }
 

@@ -22,6 +22,7 @@ public sealed class OverlayPreviewService
 
         var conflictTargets = groupedFiles
             .Where(group => group.Count() > 1)
+            .Where(group => !IsIgnoredConflict(group.Key, group.Select(item => item.File)))
             .Select(group => group.Key)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
@@ -82,6 +83,21 @@ public sealed class OverlayPreviewService
     {
         var platformPath = targetRelativePath.Replace('/', Path.DirectorySeparatorChar);
         return Path.GetFullPath(Path.Combine(gameRootPath, platformPath));
+    }
+
+    private static bool IsIgnoredConflict(string targetRelativePath, IEnumerable<VirtualFileEntry> files)
+    {
+        var normalizedTarget = targetRelativePath.Replace('\\', '/').TrimStart('/');
+        if (!normalizedTarget.StartsWith("BepInEx/config/Cat-Patch/sounds/", StringComparison.OrdinalIgnoreCase)
+            && !normalizedTarget.StartsWith("BepInEx/config/Cat-Patch/sprays/", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var entries = files.ToArray();
+        return entries.Any(entry => entry.OwningModId.Equals("__profile_state__", StringComparison.OrdinalIgnoreCase))
+            && entries.Any(entry => entry.OwningModId.Contains("Catpatch", StringComparison.OrdinalIgnoreCase)
+                || entry.OwningModId.Contains("Cat-Patch", StringComparison.OrdinalIgnoreCase));
     }
 
     private sealed record IndexedFile(int OverlayOrder, VirtualFileEntry File);

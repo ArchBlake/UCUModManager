@@ -240,10 +240,17 @@ public sealed class VirtualizationIntroDialog : Window
 public sealed class VirtualLaunchProgressDialog : Window
 {
     private readonly TextBlock _statusText = new();
+    private readonly string _heading;
+    private readonly string _initialStatus;
 
-    public VirtualLaunchProgressDialog()
+    public VirtualLaunchProgressDialog(
+        string title = "Virtualized Launch",
+        string heading = "Preparing virtualized profile",
+        string initialStatus = "Starting...")
     {
-        Title = "Virtualized Launch";
+        _heading = heading;
+        _initialStatus = initialStatus;
+        Title = title;
         Width = 420;
         SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -277,13 +284,13 @@ public sealed class VirtualLaunchProgressDialog : Window
         var root = new StackPanel();
         root.Children.Add(new TextBlock
         {
-            Text = "Preparing virtualized profile",
+            Text = _heading,
             FontSize = 15,
             FontWeight = FontWeights.SemiBold,
             Foreground = Brush("#F2F2F2")
         });
 
-        _statusText.Text = "Starting...";
+        _statusText.Text = _initialStatus;
         _statusText.Margin = new Thickness(0, 8, 0, 12);
         _statusText.Foreground = Brush("#A8A8A8");
         _statusText.TextWrapping = TextWrapping.Wrap;

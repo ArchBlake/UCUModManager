@@ -224,6 +224,15 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+        <Style TargetType="ToolTip">
+            <Setter Property="Background" Value="{StaticResource PanelAltBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushDark}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="10,7" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="HasDropShadow" Value="True" />
+        </Style>
         <Style x:Key="SectionTitle" TargetType="TextBlock">
             <Setter Property="FontSize" Value="14" />
             <Setter Property="FontWeight" Value="SemiBold" />
@@ -1061,20 +1070,27 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Text="Profile Deploy" Style="{StaticResource SectionTitle}" />
-                        <WrapPanel Grid.Row="1" Margin="0,0,0,6">
-                            <Button Content="Clean" Style="{StaticResource SecondaryButton}" Click="CleanDeployment_Click" />
-                            <Button Content="Deploy" Style="{StaticResource PrimaryButton}" Click="DeployProfile_Click" />
+                        <TextBlock Grid.Row="0" Text="Game Actions" Style="{StaticResource SectionTitle}" />
+                        <TextBlock Grid.Row="1"
+                                   Text="Launch uses the virtual profile. Deploy and Clean only affect files copied into the game folder."
+                                   Style="{StaticResource MutedText}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,3,0,8" />
+                        <WrapPanel Grid.Row="2" Margin="0,0,0,6">
+                            <Button Content="Clean Files" Style="{StaticResource SecondaryButton}" Click="CleanDeployment_Click" />
+                            <Button Content="Deploy Files" Style="{StaticResource SecondaryButton}" Click="DeployProfile_Click" />
                             <Button x:Name="VirtualLaunchButton"
-                                    Content="Launch Virtual"
-                                    Style="{StaticResource SecondaryButton}"
+                                    Content="Launch"
+                                    ToolTip="Starts the game through experimental virtualized launch. This is alpha-tested, so please report bugs."
+                                    Style="{StaticResource PrimaryButton}"
                                     Click="VirtualLaunchGame_Click" />
                         </WrapPanel>
-                        <TextBlock x:Name="DeployStatusText" Grid.Row="2" TextWrapping="Wrap" FontSize="12" />
-                        <TextBlock x:Name="DeployDetailText" Grid.Row="3" Margin="0,5,0,0" Style="{StaticResource MutedText}" />
-                        <TextBlock x:Name="VirtualLaunchStatusText" Grid.Row="4" Margin="0,5,0,0" Style="{StaticResource MutedText}" />
+                        <TextBlock x:Name="VirtualLaunchStatusText" Grid.Row="3" TextWrapping="Wrap" FontSize="12" />
+                        <TextBlock x:Name="DeployStatusText" Grid.Row="4" Margin="0,5,0,0" TextWrapping="Wrap" FontSize="12" />
+                        <TextBlock x:Name="DeployDetailText" Grid.Row="5" Margin="0,5,0,0" Style="{StaticResource MutedText}" />
                     </Grid>
                 </Border>
             </Grid>
@@ -1103,15 +1119,43 @@
 
                 <Border Grid.Column="2" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1" CornerRadius="6" Padding="12,9" Margin="0,0,10,0">
                     <StackPanel>
-                        <TextBlock Text="Warnings" Style="{StaticResource MetricTitle}" />
+                        <DockPanel LastChildFill="True">
+                            <Button x:Name="ViewWarningsButton"
+                                    DockPanel.Dock="Right"
+                                    Content="View"
+                                    Style="{StaticResource CompactSecondaryButton}"
+                                    MinHeight="24"
+                                    Padding="8,3"
+                                    Margin="8,0,0,0"
+                                    Click="ViewWarnings_Click" />
+                            <TextBlock Text="Warnings" Style="{StaticResource MetricTitle}" VerticalAlignment="Center" />
+                        </DockPanel>
                         <TextBlock x:Name="WarningCountText" Style="{StaticResource MetricValue}" Foreground="{StaticResource WarningBrush}" />
+                        <TextBlock x:Name="WarningSummaryText"
+                                   Style="{StaticResource MutedText}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,2,0,0" />
                     </StackPanel>
                 </Border>
 
                 <Border Grid.Column="3" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1" CornerRadius="6" Padding="12,9">
                     <StackPanel>
-                        <TextBlock Text="Conflicts" Style="{StaticResource MetricTitle}" />
+                        <DockPanel LastChildFill="True">
+                            <Button x:Name="ViewConflictsButton"
+                                    DockPanel.Dock="Right"
+                                    Content="View"
+                                    Style="{StaticResource CompactSecondaryButton}"
+                                    MinHeight="24"
+                                    Padding="8,3"
+                                    Margin="8,0,0,0"
+                                    Click="ViewConflicts_Click" />
+                            <TextBlock Text="Conflicts" Style="{StaticResource MetricTitle}" VerticalAlignment="Center" />
+                        </DockPanel>
                         <TextBlock x:Name="ConflictCountText" Style="{StaticResource MetricValue}" Foreground="{StaticResource DangerBrush}" />
+                        <TextBlock x:Name="ConflictSummaryText"
+                                   Style="{StaticResource MutedText}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,2,0,0" />
                     </StackPanel>
                 </Border>
             </Grid>

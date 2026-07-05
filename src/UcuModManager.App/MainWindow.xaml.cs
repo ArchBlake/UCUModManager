@@ -638,6 +638,8 @@ public partial class MainWindow : Window
         var overlayPreview = BuildCurrentOverlayPreview();
         if (overlayPreview is null)
         {
+            ConflictSummaryText.Text = "Overlay unavailable";
+            ViewConflictsButton.IsEnabled = false;
             return;
         }
 
@@ -749,11 +751,7 @@ public partial class MainWindow : Window
                 }
             }
 
-            var progress = new VirtualLaunchProgressDialog
-            {
-                Owner = IsVisible ? this : null
-            };
-            progress.Show();
+            var progress = ShowProgress("Virtualized Launch", "Preparing virtualized profile", "Starting...");
             try
             {
                 await UpdateVirtualLaunchProgressAsync(progress, "Writing launch plan...");
@@ -807,6 +805,43 @@ public partial class MainWindow : Window
     {
         progress.SetStatus(status);
         await progress.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+    }
+
+    private VirtualLaunchProgressDialog ShowProgress(string title, string heading, string status)
+    {
+        var progress = new VirtualLaunchProgressDialog(title, heading, status)
+        {
+            Owner = IsVisible ? this : null
+        };
+        progress.Show();
+        return progress;
+    }
+
+    private static void UpdateProgress(VirtualLaunchProgressDialog? progress, string status)
+    {
+        if (progress is null)
+        {
+            return;
+        }
+
+        progress.SetStatus(status);
+        progress.Dispatcher.Invoke(() => { }, DispatcherPriority.Background);
+    }
+
+    private static void CloseProgress(VirtualLaunchProgressDialog? progress)
+    {
+        if (progress is null)
+        {
+            return;
+        }
+
+        try
+        {
+            progress.Close();
+        }
+        catch (InvalidOperationException)
+        {
+        }
     }
 
     private IReadOnlyList<ProfileDeployResult> CleanManagedDeploymentsBeforeVirtualLaunch(string activeProfileId, string gameRootPath)
@@ -1586,7 +1621,7 @@ public partial class MainWindow : Window
             this,
             "UCU ModManager\n"
             + "Development Build · Alpha Public\n\n"
-            + "Lead developer: Arch Blake\n"
+            + "Dev: Arch Blake\n"
             + "Nexus metadata repository: Jimmyking\n\n"
             + "Special thanks: Horus and VoidYuum",
             "About UCU ModManager",
@@ -1628,6 +1663,41 @@ public partial class MainWindow : Window
         }
 
         SaveProfileFromRows();
+    }
+
+    private void ViewConflicts_Click(object sender, RoutedEventArgs e)
+    {
+        var overlayPreview = BuildCurrentOverlayPreview();
+        if (overlayPreview is null || overlayPreview.Conflicts.Count == 0)
+        {
+            MessageBox.Show(this, "No active mod conflicts were found.", "Mod Conflicts", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        MessageBox.Show(
+            this,
+            BuildConflictDetailsMessage(overlayPreview.Conflicts),
+            "Mod Conflicts",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
+    }
+
+    private void ViewWarnings_Click(object sender, RoutedEventArgs e)
+    {
+        var overlayPreview = BuildCurrentOverlayPreview();
+        var message = BuildWarningsDetailsMessage(overlayPreview);
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            MessageBox.Show(this, "No active warnings were found.", "Mod Warnings", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        MessageBox.Show(
+            this,
+            message,
+            "Mod Warnings",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
     }
 
     private void InstallModArchives_Click(object sender, RoutedEventArgs e)
@@ -1787,6 +1857,7 @@ public partial class MainWindow : Window
             }
         }
 
+        VirtualLaunchProgressDialog? progressDialog = null;
         try
         {
             _isAutoLinkNexusRunning = true;
@@ -1794,12 +1865,17 @@ public partial class MainWindow : Window
             if (showBusyCursor)
             {
                 Mouse.OverrideCursor = Cursors.Wait;
+                progressDialog = ShowProgress("Auto Link Nexus", "Linking mods to Nexus", "Loading metadata catalog...");
             }
 
             SetAutoLinkStatus("Auto Link: loading metadata catalog...", "WarningBrush");
             await Task.Yield();
 
-            var progress = new Progress<string>(message => SetAutoLinkStatus(message, "WarningBrush"));
+            var progress = new Progress<string>(message =>
+            {
+                SetAutoLinkStatus(message, "WarningBrush");
+                UpdateProgress(progressDialog, message.Replace("Auto Link: ", string.Empty, StringComparison.OrdinalIgnoreCase));
+            });
             var summary = await AutoLinkNexusModsAsync(progress, allowClearingUnmatchedExistingLinks);
             LoadMods();
             SetAutoLinkStatus(
@@ -1826,6 +1902,7 @@ public partial class MainWindow : Window
         {
             _isAutoLinkNexusRunning = false;
             AutoLinkNexusButton.IsEnabled = true;
+            CloseProgress(progressDialog);
             if (showBusyCursor)
             {
                 Mouse.OverrideCursor = null;
@@ -2139,6 +2216,58 @@ public partial class MainWindow : Window
 
     private void ShowAutoLinkNexusResults(NexusAutoLinkSummary summary)
     {
+        var lines = _settings.ShowAdvancedModColumns
+            ? BuildAdvancedAutoLinkResultLines(summary)
+            : BuildCompactAutoLinkResultLines(summary);
+
+        MessageBox.Show(
+            this,
+            string.Join("\n", lines),
+            "Auto Link Nexus",
+            MessageBoxButton.OK,
+            summary.ApiErrors == 0 && summary.SearchErrors == 0 && summary.Skipped == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
+    }
+
+    private static List<string> BuildCompactAutoLinkResultLines(NexusAutoLinkSummary summary)
+    {
+        var totalReady = summary.Linked + summary.Completed + summary.Repaired + summary.AlreadyLinked;
+        var lines = new List<string>
+        {
+            "Auto Link completed.",
+            string.Empty,
+            $"Ready Nexus links: {totalReady}",
+            $"New links: {summary.Linked}",
+            $"Refreshed existing links: {summary.Completed}",
+            $"Repaired links: {summary.Repaired}"
+        };
+
+        if (summary.Cleared > 0)
+        {
+            lines.Add($"Cleared unreliable links: {summary.Cleared}");
+        }
+
+        if (summary.Skipped > 0)
+        {
+            lines.Add($"Skipped: {summary.Skipped}");
+        }
+
+        var errors = summary.ApiErrors + summary.SearchErrors;
+        if (errors > 0)
+        {
+            lines.Add($"Errors: {errors}");
+        }
+
+        if (summary.Skipped > 0 || errors > 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add("Enable Advanced Mode to see the detailed matching report.");
+        }
+
+        return lines;
+    }
+
+    private static List<string> BuildAdvancedAutoLinkResultLines(NexusAutoLinkSummary summary)
+    {
         var lines = new List<string>
         {
             $"Linked: {summary.Linked}",
@@ -2166,12 +2295,7 @@ public partial class MainWindow : Window
             }
         }
 
-        MessageBox.Show(
-            this,
-            string.Join("\n", lines),
-            "Auto Link Nexus",
-            MessageBoxButton.OK,
-            summary.ApiErrors == 0 && summary.SearchErrors == 0 && summary.Skipped == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        return lines;
     }
 
     private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
@@ -2185,11 +2309,14 @@ public partial class MainWindow : Window
 
         try
         {
+            var progress = ShowProgress("Check Updates", "Checking Nexus updates", "Refreshing metadata...");
             var results = await CheckNexusUpdatesAsync(checkableEntries);
+            CloseProgress(progress);
             ShowUpdateCheckResults(results);
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or InvalidOperationException)
         {
+            CloseProgress(OwnedWindows.OfType<VirtualLaunchProgressDialog>().FirstOrDefault(window => window.Title == "Check Updates"));
             MessageBox.Show(this, exception.Message, "Check Updates failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -2206,7 +2333,9 @@ public partial class MainWindow : Window
 
         try
         {
+            var checkProgress = ShowProgress("Update Mods", "Checking updates", "Refreshing metadata...");
             var results = await CheckNexusUpdatesAsync(checkableEntries);
+            CloseProgress(checkProgress);
             var updatePlans = BuildNexusUpdatePlans(checkableEntries, results);
             var skippedUpdates = results
                 .Where(result => result.IsUpdateAvailable)
@@ -2250,6 +2379,7 @@ public partial class MainWindow : Window
             var downloadFailures = new List<ModInstallOutcome>();
             var failedDownloadPlans = new List<NexusModUpdatePlan>();
             var downloadRootPath = Path.Combine(_managerPaths.DownloadsPath, "nexus-updates");
+            var progress = ShowProgress("Update Mods", "Downloading updates", "Starting downloads...");
             foreach (var updatePlan in updatePlans)
             {
                 var row = _mods.FirstOrDefault(mod => mod.Id.Equals(updatePlan.Entry.Mod.Id, StringComparison.OrdinalIgnoreCase));
@@ -2258,6 +2388,7 @@ public partial class MainWindow : Window
                     row.UpdateStatus = "Downloading...";
                     ModsListView.Items.Refresh();
                 }
+                UpdateProgress(progress, $"Downloading {updatePlan.Entry.Mod.Name}...");
 
                 try
                 {
@@ -2301,6 +2432,7 @@ public partial class MainWindow : Window
 
             if (downloadedArchives.Count == 0)
             {
+                CloseProgress(progress);
                 ShowModInstallResults(downloadFailures);
                 OfferManualFallbackForUpdates(skippedUpdates
                     .Concat(apiErrorFallbacks)
@@ -2308,12 +2440,14 @@ public partial class MainWindow : Window
                 return;
             }
 
+            UpdateProgress(progress, "Installing downloaded archives...");
             foreach (var row in _mods.Where(mod => downloadedArchives.Count > 0 && mod.UpdateStatus == "Downloaded"))
             {
                 row.UpdateStatus = "Install queued";
             }
 
             ModsListView.Items.Refresh();
+            CloseProgress(progress);
             InstallModArchives(downloadedArchives, downloadFailures);
             OfferManualFallbackForUpdates(skippedUpdates
                 .Concat(apiErrorFallbacks)
@@ -2326,6 +2460,7 @@ public partial class MainWindow : Window
             or InvalidOperationException
             or UnauthorizedAccessException)
         {
+            CloseProgress(OwnedWindows.OfType<VirtualLaunchProgressDialog>().FirstOrDefault(window => window.Title == "Update Mods"));
             MessageBox.Show(this, exception.Message, "Update Mods failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -2957,12 +3092,15 @@ public partial class MainWindow : Window
 
         try
         {
+            var progress = ShowProgress("Export .UCU", "Exporting modpack recipe", "Writing .UCU file...");
             _ucuModpackService.Save(dialog.FileName, package);
+            CloseProgress(progress);
             ModpacksStatusText.Text = $"Exported .UCU modpack: {Path.GetFileName(dialog.FileName)}";
             MessageBox.Show(this, $"Exported {package.Mods.Count} mod(s).", "Export .UCU", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or JsonException)
         {
+            CloseProgress(OwnedWindows.OfType<VirtualLaunchProgressDialog>().FirstOrDefault(window => window.Title == "Export .UCU"));
             MessageBox.Show(this, exception.Message, "Export .UCU failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -2998,12 +3136,15 @@ public partial class MainWindow : Window
 
         try
         {
+            var progress = ShowProgress("Export .UCUP", "Packing portable modpack", "Writing profile and mod archives...");
             SavePortableUcuModpack(dialog.FileName, package, profile);
+            CloseProgress(progress);
             ModpacksStatusText.Text = $"Exported .UCUP modpack: {Path.GetFileName(dialog.FileName)}";
             MessageBox.Show(this, $"Exported portable modpack with {package.Mods.Count} mod(s).", "Export .UCUP", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or JsonException)
         {
+            CloseProgress(OwnedWindows.OfType<VirtualLaunchProgressDialog>().FirstOrDefault(window => window.Title == "Export .UCUP"));
             MessageBox.Show(this, exception.Message, "Export .UCUP failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -3171,18 +3312,22 @@ public partial class MainWindow : Window
 
         try
         {
+            var progress = ShowProgress("Import Modpack", "Loading modpack", "Reading modpack file...");
             var isPortable = Path.GetExtension(dialog.FileName).Equals(".ucup", StringComparison.OrdinalIgnoreCase);
             var package = isPortable
                 ? LoadPortableUcuModpackManifest(dialog.FileName)
                 : _ucuModpackService.Load(dialog.FileName);
+            UpdateProgress(progress, "Preparing modpack preview...");
             _importedUcuModpack = package;
             _importedUcuModpackPath = dialog.FileName;
             _importedUcuModpackIsPortable = isPortable;
             _manualDownloadModpackKeys.Clear();
             ShowImportedUcuModpack(package, dialog.FileName);
+            CloseProgress(progress);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
+            CloseProgress(OwnedWindows.OfType<VirtualLaunchProgressDialog>().FirstOrDefault(window => window.Title == "Import Modpack"));
             MessageBox.Show(this, exception.Message, "Import .UCU failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -3315,16 +3460,21 @@ public partial class MainWindow : Window
         }
 
         InstallImportedUcuModpackButton.IsEnabled = false;
+        var progress = ShowProgress(
+            _importedUcuModpackIsPortable ? "Install .UCUP" : "Install .UCU",
+            _importedUcuModpackIsPortable ? "Installing portable modpack" : "Installing modpack recipe",
+            "Preparing modpack...");
         try
         {
             if (_importedUcuModpackIsPortable)
             {
-                InstallPortableUcuModpack(_importedUcuModpack, _importedUcuModpackPath);
+                InstallPortableUcuModpack(_importedUcuModpack, _importedUcuModpackPath, progress);
             }
             else
             {
-                await InstallUcuModpackAsync(_importedUcuModpack, apiKey!);
+                await InstallUcuModpackAsync(_importedUcuModpack, apiKey!, progress);
             }
+            CloseProgress(progress);
         }
         catch (Exception exception) when (exception is HttpRequestException
             or TaskCanceledException
@@ -3333,6 +3483,7 @@ public partial class MainWindow : Window
             or InvalidOperationException
             or UnauthorizedAccessException)
         {
+            CloseProgress(progress);
             MessageBox.Show(this, exception.Message, "Install .UCU failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
@@ -3341,7 +3492,10 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task InstallUcuModpackAsync(UcuModpackPackage package, string apiKey)
+    private async Task InstallUcuModpackAsync(
+        UcuModpackPackage package,
+        string apiKey,
+        VirtualLaunchProgressDialog? progress)
     {
         _manualDownloadModpackKeys.Clear();
         var modIdsByPriority = new Dictionary<int, string>();
@@ -3364,6 +3518,7 @@ public partial class MainWindow : Window
             try
             {
                 ModpacksStatusText.Text = $"Downloading {mod.Name}...";
+                UpdateProgress(progress, $"Downloading {mod.Name}...");
                 var target = await ResolveUcuDownloadTargetAsync(mod, apiKey);
                 if (target is null)
                 {
@@ -3436,6 +3591,7 @@ public partial class MainWindow : Window
             try
             {
                 ModpacksStatusText.Text = $"Installing {plan.Mod.Name}...";
+                UpdateProgress(progress, $"Installing {plan.Mod.Name}...");
                 var result = _importService.ImportZip(plan.ArchivePath, _managerPaths);
                 modIdsByPriority[plan.Mod.Priority] = result.Manifest.Mod.Id;
                 outcomes.Add(ModInstallOutcome.Success(Path.GetFileName(plan.ArchivePath), result));
@@ -3478,6 +3634,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        UpdateProgress(progress, "Creating profile...");
         var profile = CreateProfileFromUcuModpack(package, modIdsByPriority);
         _settings = _settings with { ActiveProfileId = profile.Id };
         _settingsService.Save(_managerPaths, _settings);
@@ -3490,7 +3647,10 @@ public partial class MainWindow : Window
         MessageBox.Show(this, $"Created profile '{profile.Name}'.", "Install .UCU complete", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
-    private void InstallPortableUcuModpack(UcuModpackPackage package, string? packagePath)
+    private void InstallPortableUcuModpack(
+        UcuModpackPackage package,
+        string? packagePath,
+        VirtualLaunchProgressDialog? progress)
     {
         if (string.IsNullOrWhiteSpace(packagePath) || !File.Exists(packagePath))
         {
@@ -3512,6 +3672,7 @@ public partial class MainWindow : Window
             using var archive = ZipFile.OpenRead(packagePath);
             foreach (var mod in package.Mods.OrderBy(mod => mod.Priority))
             {
+                UpdateProgress(progress, $"Reading {mod.Name}...");
                 var existing = FindInstalledLibraryEntryForUcuMod(mod, requireSameFile: false)
                     ?? FindInstalledLibraryEntryByNameAndVersion(mod);
                 if (existing is not null)
@@ -3546,7 +3707,7 @@ public partial class MainWindow : Window
                 }
             }
 
-            RunUcuImportPlans(importPlans, outcomes, modIdsByPriority);
+            RunUcuImportPlans(importPlans, outcomes, modIdsByPriority, progress);
             if (modIdsByPriority.Count == 0)
             {
                 ShowModInstallResults(outcomes);
@@ -3555,6 +3716,7 @@ public partial class MainWindow : Window
             }
 
             _libraryEntries = _libraryService.LoadLibrary(_managerPaths);
+            UpdateProgress(progress, "Creating profile...");
             var profile = CreateProfileFromUcuModpack(package, modIdsByPriority);
             _settings = _settings with { ActiveProfileId = profile.Id };
             _settingsService.Save(_managerPaths, _settings);
@@ -3584,7 +3746,8 @@ public partial class MainWindow : Window
     private void RunUcuImportPlans(
         IReadOnlyList<UcuModpackInstallPlan> importPlans,
         List<ModInstallOutcome> outcomes,
-        Dictionary<int, string> modIdsByPriority)
+        Dictionary<int, string> modIdsByPriority,
+        VirtualLaunchProgressDialog? progress = null)
     {
         if (importPlans.Count == 0)
         {
@@ -3629,6 +3792,7 @@ public partial class MainWindow : Window
             try
             {
                 ModpacksStatusText.Text = $"Installing {plan.Mod.Name}...";
+                UpdateProgress(progress, $"Installing {plan.Mod.Name}...");
                 var result = _importService.ImportZip(plan.ArchivePath, _managerPaths);
                 modIdsByPriority[plan.Mod.Priority] = result.Manifest.Mod.Id;
                 outcomes.Add(ModInstallOutcome.Success(Path.GetFileName(plan.ArchivePath), result));
@@ -4118,98 +4282,113 @@ public partial class MainWindow : Window
         IReadOnlyList<string> archivePaths,
         IReadOnlyList<ModInstallOutcome>? initialOutcomes = null)
     {
+        var progress = ShowProgress("Install Mods", "Installing mod archives", "Reading archives...");
         var plannedImports = new List<ModInstallPlan>();
         var outcomes = initialOutcomes?.ToList() ?? new List<ModInstallOutcome>();
 
-        foreach (var archivePath in archivePaths)
+        try
         {
-            try
-            {
-                var preview = _importService.PreviewZip(archivePath, _managerPaths);
-                plannedImports.Add(new ModInstallPlan(archivePath, preview));
-            }
-            catch (Exception exception) when (exception is IOException
-                or InvalidDataException
-                or InvalidOperationException
-                or UnauthorizedAccessException)
-            {
-                outcomes.Add(ModInstallOutcome.Failure(Path.GetFileName(archivePath), exception.Message));
-            }
-        }
-
-        var deployedUpdateModIds = plannedImports
-            .Where(plan => plan.Preview.Action == ModImportAction.Updated)
-            .Where(plan => CountDeployedFilesForMod(plan.Preview.ModId) > 0)
-            .Select(plan => plan.Preview.ModId)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        IReadOnlyList<ProfileDeployResult> preUpdateCleanResults = Array.Empty<ProfileDeployResult>();
-        if (deployedUpdateModIds.Count > 0)
-        {
-            var answer = MessageBox.Show(
-                this,
-                BuildDeployedUpdatePrompt(plannedImports, deployedUpdateModIds),
-                "Update deployed mods",
-                MessageBoxButton.YesNoCancel,
-                MessageBoxImage.Warning);
-            if (answer == MessageBoxResult.Cancel)
-            {
-                return;
-            }
-
-            if (answer == MessageBoxResult.Yes)
+            foreach (var archivePath in archivePaths)
             {
                 try
                 {
-                    preUpdateCleanResults = CleanDeploymentsForMods(deployedUpdateModIds);
-                    var blockedCleanResults = preUpdateCleanResults
-                        .Where(result => result.PreservedFiles > 0)
-                        .ToArray();
-                    if (blockedCleanResults.Length > 0)
+                    UpdateProgress(progress, $"Reading {Path.GetFileName(archivePath)}...");
+                    var preview = _importService.PreviewZip(archivePath, _managerPaths);
+                    plannedImports.Add(new ModInstallPlan(archivePath, preview));
+                }
+                catch (Exception exception) when (exception is IOException
+                    or InvalidDataException
+                    or InvalidOperationException
+                    or UnauthorizedAccessException)
+                {
+                    outcomes.Add(ModInstallOutcome.Failure(Path.GetFileName(archivePath), exception.Message));
+                }
+            }
+
+            var deployedUpdateModIds = plannedImports
+                .Where(plan => plan.Preview.Action == ModImportAction.Updated)
+                .Where(plan => CountDeployedFilesForMod(plan.Preview.ModId) > 0)
+                .Select(plan => plan.Preview.ModId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            IReadOnlyList<ProfileDeployResult> preUpdateCleanResults = Array.Empty<ProfileDeployResult>();
+            if (deployedUpdateModIds.Count > 0)
+            {
+                CloseProgress(progress);
+                var answer = MessageBox.Show(
+                    this,
+                    BuildDeployedUpdatePrompt(plannedImports, deployedUpdateModIds),
+                    "Update deployed mods",
+                    MessageBoxButton.YesNoCancel,
+                    MessageBoxImage.Warning);
+                if (answer == MessageBoxResult.Cancel)
+                {
+                    return;
+                }
+
+                if (answer == MessageBoxResult.Yes)
+                {
+                    try
+                    {
+                        preUpdateCleanResults = CleanDeploymentsForMods(deployedUpdateModIds);
+                        var blockedCleanResults = preUpdateCleanResults
+                            .Where(result => result.PreservedFiles > 0)
+                            .ToArray();
+                        if (blockedCleanResults.Length > 0)
+                        {
+                            RefreshDeployStatus();
+                            MessageBox.Show(
+                                this,
+                                BuildBlockedUpdateCleanupMessage(blockedCleanResults),
+                                "Update stopped",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Warning);
+                            return;
+                        }
+                    }
+                    catch (Exception exception) when (exception is IOException or InvalidOperationException or UnauthorizedAccessException)
                     {
                         RefreshDeployStatus();
-                        MessageBox.Show(
-                            this,
-                            BuildBlockedUpdateCleanupMessage(blockedCleanResults),
-                            "Update stopped",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Warning);
+                        MessageBox.Show(this, exception.Message, "Clean failed", MessageBoxButton.OK, MessageBoxImage.Warning);
                         return;
                     }
                 }
-                catch (Exception exception) when (exception is IOException or InvalidOperationException or UnauthorizedAccessException)
+
+                progress = ShowProgress("Install Mods", "Installing mod archives", "Installing archives...");
+            }
+
+            foreach (var plannedImport in plannedImports)
+            {
+                try
                 {
-                    RefreshDeployStatus();
-                    MessageBox.Show(this, exception.Message, "Clean failed", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
+                    UpdateProgress(progress, $"Installing {Path.GetFileName(plannedImport.ArchivePath)}...");
+                    var result = _importService.ImportZip(plannedImport.ArchivePath, _managerPaths);
+                    outcomes.Add(ModInstallOutcome.Success(Path.GetFileName(plannedImport.ArchivePath), result));
+                }
+                catch (Exception exception) when (exception is IOException
+                    or InvalidDataException
+                    or InvalidOperationException
+                    or UnauthorizedAccessException)
+                {
+                    outcomes.Add(ModInstallOutcome.Failure(Path.GetFileName(plannedImport.ArchivePath), exception.Message));
                 }
             }
-        }
 
-        foreach (var plannedImport in plannedImports)
+            var newlyInstalledModIds = outcomes
+                .Where(outcome => outcome.Result?.Action == ModImportAction.Installed)
+                .Select(outcome => outcome.Result!.Manifest.Mod.Id)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            UpdateProgress(progress, "Refreshing mod list...");
+            LoadMods();
+            EnableInstalledModsInActiveProfile(newlyInstalledModIds);
+            CloseProgress(progress);
+            ShowModInstallResults(outcomes, preUpdateCleanResults);
+        }
+        finally
         {
-            try
-            {
-                var result = _importService.ImportZip(plannedImport.ArchivePath, _managerPaths);
-                outcomes.Add(ModInstallOutcome.Success(Path.GetFileName(plannedImport.ArchivePath), result));
-            }
-            catch (Exception exception) when (exception is IOException
-                or InvalidDataException
-                or InvalidOperationException
-                or UnauthorizedAccessException)
-            {
-                outcomes.Add(ModInstallOutcome.Failure(Path.GetFileName(plannedImport.ArchivePath), exception.Message));
-            }
+            CloseProgress(progress);
         }
-
-        var newlyInstalledModIds = outcomes
-            .Where(outcome => outcome.Result?.Action == ModImportAction.Installed)
-            .Select(outcome => outcome.Result!.Manifest.Mod.Id)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        LoadMods();
-        EnableInstalledModsInActiveProfile(newlyInstalledModIds);
-        ShowModInstallResults(outcomes, preUpdateCleanResults);
     }
 
     private void ShowUpdateCheckResults(IReadOnlyList<NexusUpdateCheckResult> results)
@@ -4264,8 +4443,13 @@ public partial class MainWindow : Window
         RefreshNexusMetadataStatusText(catalogLoad.Status);
         var results = new List<NexusUpdateCheckResult>();
         var manifestsByModId = new Dictionary<string, ModManifest>(StringComparer.OrdinalIgnoreCase);
+        var progressDialog = OwnedWindows.OfType<VirtualLaunchProgressDialog>()
+            .FirstOrDefault(window => window.Title is "Check Updates" or "Update Mods");
+        var processed = 0;
         foreach (var entry in checkableEntries)
         {
+            processed++;
+            UpdateProgress(progressDialog, $"Checking {processed}/{checkableEntries.Count}: {entry.Mod.Name}");
             var match = _nexusMetadataMatcher.FindBestMatch(entry, catalogLoad.Entries);
             var (result, manifest) = match is null
                 ? (new NexusUpdateCheckResult(
@@ -5119,6 +5303,185 @@ public partial class MainWindow : Window
             ?? modId;
     }
 
+    private string BuildConflictDetailsMessage(IReadOnlyList<OverlayConflict> conflicts)
+    {
+        var lines = new List<string>
+        {
+            $"Conflicts: {conflicts.Count} target file(s).",
+            "Multiple enabled mods provide the same game file. The winner is the file that will be used.",
+            string.Empty
+        };
+
+        foreach (var conflict in conflicts.Take(12))
+        {
+            var overwritten = conflict.Entries
+                .Where(entry => !entry.IsWinner)
+                .OrderBy(entry => entry.Priority)
+                .ThenBy(entry => entry.OverlayOrder)
+                .Select(entry => GetModName(entry.OwningModId))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            lines.Add(conflict.TargetRelativePath);
+            lines.Add($"Winner: {GetModName(conflict.Winner.OwningModId)}");
+            lines.Add(overwritten.Length == 0
+                ? "Overwritten: none"
+                : $"Overwritten: {string.Join(", ", overwritten)}");
+            lines.Add(string.Empty);
+        }
+
+        if (conflicts.Count > 12)
+        {
+            lines.Add($"... {conflicts.Count - 12} more conflict(s)");
+        }
+
+        return string.Join("\n", lines).TrimEnd();
+    }
+
+    private string BuildWarningsDetailsMessage(OverlayPreview? overlayPreview)
+    {
+        var lines = new List<string>();
+        var modWarnings = _mods
+            .Where(mod => mod.WarningCount > 0)
+            .Select(mod => new
+            {
+                mod.DisplayName,
+                Warnings = mod.Warnings.Where(warning => !string.IsNullOrWhiteSpace(warning)).ToArray()
+            })
+            .Where(item => item.Warnings.Length > 0)
+            .ToArray();
+
+        var overlayWarnings = overlayPreview?.Warnings
+            .Where(warning => !string.IsNullOrWhiteSpace(warning))
+            .ToArray() ?? Array.Empty<string>();
+        var missingSources = overlayPreview?.MissingSources ?? Array.Empty<OverlayPreviewEntry>();
+
+        var total = modWarnings.Sum(item => item.Warnings.Length)
+            + overlayWarnings.Length
+            + missingSources.Count;
+        if (total == 0)
+        {
+            return string.Empty;
+        }
+
+        lines.Add($"Warnings: {total} issue(s).");
+        lines.Add("Warnings do not always block launch, but they are worth reviewing before sharing a modpack.");
+        lines.Add(string.Empty);
+
+        foreach (var item in modWarnings.Take(12))
+        {
+            lines.Add(item.DisplayName);
+            foreach (var warning in item.Warnings.Take(4))
+            {
+                lines.Add($"- {FormatWarningForDisplay(warning)}");
+            }
+
+            if (item.Warnings.Length > 4)
+            {
+                lines.Add($"- ... {item.Warnings.Length - 4} more");
+            }
+
+            lines.Add(string.Empty);
+        }
+
+        if (overlayWarnings.Length > 0)
+        {
+            lines.Add("Profile overlay");
+            foreach (var warning in overlayWarnings.Take(8))
+            {
+                lines.Add($"- {FormatWarningForDisplay(warning)}");
+            }
+
+            if (overlayWarnings.Length > 8)
+            {
+                lines.Add($"- ... {overlayWarnings.Length - 8} more");
+            }
+
+            lines.Add(string.Empty);
+        }
+
+        if (missingSources.Count > 0)
+        {
+            lines.Add("Missing source files");
+            foreach (var missing in missingSources.Take(8))
+            {
+                lines.Add($"- {missing.TargetRelativePath} from {GetModName(missing.OwningModId)}");
+            }
+
+            if (missingSources.Count > 8)
+            {
+                lines.Add($"- ... {missingSources.Count - 8} more");
+            }
+        }
+
+        return string.Join("\n", lines).TrimEnd();
+    }
+
+    private string FormatWarningForDisplay(string warning)
+    {
+        return _settings.ShowAdvancedModColumns
+            ? warning
+            : CompactWarningText(warning);
+    }
+
+    private static string CompactWarningText(string warning)
+    {
+        if (string.IsNullOrWhiteSpace(warning))
+        {
+            return "Unknown warning";
+        }
+
+        var text = Regex.Replace(warning.Trim(), @"\s+", " ");
+        if (text.StartsWith("Potential external assembly references detected:", StringComparison.OrdinalIgnoreCase))
+        {
+            var details = text["Potential external assembly references detected:".Length..].Trim();
+            return string.IsNullOrWhiteSpace(details)
+                ? "External DLL references detected"
+                : $"External DLL references: {TrimCompactWarning(details, 74)}";
+        }
+
+        if (text.StartsWith("Archive root '", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Archive has an extra top-level folder.";
+        }
+
+        if (text.Contains("missing", StringComparison.OrdinalIgnoreCase)
+            && text.Contains("depend", StringComparison.OrdinalIgnoreCase))
+        {
+            return TrimCompactWarning(text, 96);
+        }
+
+        if (text.Contains("outside", StringComparison.OrdinalIgnoreCase)
+            && text.Contains("game", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Skipped an unsafe path outside the game folder.";
+        }
+
+        if (text.Contains("source file is missing", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("missing source", StringComparison.OrdinalIgnoreCase))
+        {
+            return "A source file is missing.";
+        }
+
+        if (text.Contains("could not", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("failed", StringComparison.OrdinalIgnoreCase))
+        {
+            return TrimCompactWarning(text, 96);
+        }
+
+        return TrimCompactWarning(text, 110);
+    }
+
+    private static string TrimCompactWarning(string text, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(text) || text.Length <= maxLength)
+        {
+            return text;
+        }
+
+        return text[..Math.Max(0, maxLength - 3)].TrimEnd() + "...";
+    }
+
     private static string BuildUpdateStatusText(NexusUpdateCheckResult result)
     {
         if (!string.IsNullOrWhiteSpace(result.ErrorMessage))
@@ -5526,7 +5889,11 @@ public partial class MainWindow : Window
             InstalledCountText.Text = "0";
             FileCountText.Text = "0";
             WarningCountText.Text = "0";
+            WarningSummaryText.Text = "No active profile";
+            ViewWarningsButton.IsEnabled = false;
             ConflictCountText.Text = "0";
+            ConflictSummaryText.Text = "No active profile";
+            ViewConflictsButton.IsEnabled = false;
             OverlayListView.ItemsSource = Array.Empty<OverlayRow>();
             RefreshVirtualLaunchStatus();
             return;
@@ -5535,6 +5902,10 @@ public partial class MainWindow : Window
         var overlayPreview = BuildCurrentOverlayPreview();
         if (overlayPreview is null)
         {
+            WarningSummaryText.Text = "Overlay unavailable";
+            ViewWarningsButton.IsEnabled = false;
+            ConflictSummaryText.Text = "Overlay unavailable";
+            ViewConflictsButton.IsEnabled = false;
             return;
         }
 
@@ -5549,7 +5920,15 @@ public partial class MainWindow : Window
         InstalledCountText.Text = _mods.Count.ToString();
         FileCountText.Text = overlayPreview.ActiveEntries.Count.ToString();
         WarningCountText.Text = warningCount.ToString();
+        WarningSummaryText.Text = warningCount == 0
+            ? "No warnings"
+            : $"{warningCount} issue(s) need review";
+        ViewWarningsButton.IsEnabled = warningCount > 0;
         ConflictCountText.Text = overlayPreview.Conflicts.Count.ToString();
+        ConflictSummaryText.Text = overlayPreview.Conflicts.Count == 0
+            ? "No overwritten files"
+            : $"{overlayPreview.Conflicts.Count} target file(s) overwritten";
+        ViewConflictsButton.IsEnabled = overlayPreview.Conflicts.Count > 0;
         OverlayListView.ItemsSource = overlayPreview.Entries
             .Select(OverlayRow.FromEntry)
             .ToArray();
@@ -5670,7 +6049,11 @@ public partial class MainWindow : Window
         SelectedContentCountText.Text = selectedMod.ContentFileCount.ToString();
         SelectedWarningCountText.Text = selectedMod.WarningCount.ToString();
         DependenciesListView.ItemsSource = selectedMod.Dependencies;
-        WarningsListBox.ItemsSource = selectedMod.Warnings;
+        WarningsListBox.ItemsSource = selectedMod.Warnings
+            .Where(warning => !string.IsNullOrWhiteSpace(warning))
+            .Select(FormatWarningForDisplay)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private void ShowSelectedNexusFiles(ModRow selectedMod)
@@ -6222,6 +6605,7 @@ public partial class MainWindow : Window
             _settings = _settings with { ShowAdvancedModColumns = showAdvancedColumns };
             _settingsService.Save(_managerPaths, _settings);
             ApplyModTableColumnSettings();
+            ShowSelectedMod(ModsListView.SelectedItem as ModRow);
             RefreshSettingsStatus();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -6432,8 +6816,8 @@ public partial class MainWindow : Window
     {
         if (_currentProfile is null)
         {
-            SetStatus(DeployStatusText, "Deploy: no active profile", "MutedTextBrush");
-            DeployDetailText.Text = "Load or create a profile before deploying files.";
+            SetStatus(DeployStatusText, "Physical files: no active profile", "MutedTextBrush");
+            DeployDetailText.Text = "Load or create a profile before using Deploy or Clean.";
             return;
         }
 
@@ -6443,17 +6827,17 @@ public partial class MainWindow : Window
             var otherDeployedProfiles = GetOtherDeployedProfiles(_currentProfile.Id);
             if (otherDeployedProfiles.Count > 0)
             {
-                SetStatus(DeployStatusText, "Deploy: another profile is active", "WarningBrush");
-                DeployDetailText.Text = $"Deploy will clean {string.Join(", ", otherDeployedProfiles.Select(profile => profile.Name))} before deploying this profile.";
+                SetStatus(DeployStatusText, "Physical files: another profile is deployed", "WarningBrush");
+                DeployDetailText.Text = $"Deploy will clean {string.Join(", ", otherDeployedProfiles.Select(profile => profile.Name))} before copying this profile.";
                 return;
             }
 
-            SetStatus(DeployStatusText, "Deploy: clean", "AccentBrush");
-            DeployDetailText.Text = "No profile files are currently managed in the game folder.";
+            SetStatus(DeployStatusText, "Physical files: clean", "AccentBrush");
+            DeployDetailText.Text = "No copied profile files are currently managed in the game folder.";
             return;
         }
 
-        SetStatus(DeployStatusText, $"Deploy: {manifest.Files.Count} managed files", "WarningBrush");
+        SetStatus(DeployStatusText, $"Physical files: {manifest.Files.Count} copied files in game folder", "WarningBrush");
         var gameRootNote = string.IsNullOrWhiteSpace(_settings.GameRootPath)
             || manifest.GameRootPath.Equals(_settings.GameRootPath, StringComparison.OrdinalIgnoreCase)
                 ? string.Empty
@@ -6466,28 +6850,28 @@ public partial class MainWindow : Window
         if (_currentProfile is null)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Virtual launch: no active profile", "MutedTextBrush");
+            SetStatus(VirtualLaunchStatusText, "Launch: no active profile", "MutedTextBrush");
             return;
         }
 
         if (!_settings.VirtualizationEnabled)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Virtual launch: disabled in Settings", "MutedTextBrush");
+            SetStatus(VirtualLaunchStatusText, "Launch: virtual mode disabled in Settings", "MutedTextBrush");
             return;
         }
 
         if (!_currentProfile.Virtualization.UseExperimentalVirtualizedLaunch)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Virtual launch: disabled for this profile", "MutedTextBrush");
+            SetStatus(VirtualLaunchStatusText, "Launch: virtual mode disabled for this profile", "MutedTextBrush");
             return;
         }
 
         if (string.IsNullOrWhiteSpace(_settings.GameRootPath))
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Virtual launch: waiting for a game folder", "WarningBrush");
+            SetStatus(VirtualLaunchStatusText, "Launch: choose a game folder first", "WarningBrush");
             return;
         }
 
@@ -6495,7 +6879,7 @@ public partial class MainWindow : Window
         if (!validation.IsValid)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Virtual launch: invalid game folder", "DangerBrush");
+            SetStatus(VirtualLaunchStatusText, "Launch: invalid game folder", "DangerBrush");
             return;
         }
 
@@ -6503,7 +6887,7 @@ public partial class MainWindow : Window
         if (!state.IsComplete)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Virtual launch: BepInEx is required in the game folder", "WarningBrush");
+            SetStatus(VirtualLaunchStatusText, "Launch: install BepInEx first", "WarningBrush");
             return;
         }
 
@@ -6511,14 +6895,14 @@ public partial class MainWindow : Window
         if (overlayPreview is null)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Virtual launch: overlay unavailable", "WarningBrush");
+            SetStatus(VirtualLaunchStatusText, "Launch: profile overlay unavailable", "WarningBrush");
             return;
         }
 
         if (overlayPreview.MissingSources.Count > 0)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, $"Virtual launch: {overlayPreview.MissingSources.Count} missing source files", "DangerBrush");
+            SetStatus(VirtualLaunchStatusText, $"Launch: {overlayPreview.MissingSources.Count} missing source files", "DangerBrush");
             return;
         }
 
@@ -6528,7 +6912,7 @@ public partial class MainWindow : Window
             : $"{overlayPreview.Conflicts.Count} conflicts";
         SetStatus(
             VirtualLaunchStatusText,
-            $"Virtual launch: {overlayPreview.ActiveEntries.Count} files mapped, {conflictText}",
+            $"Launch: ready, {overlayPreview.ActiveEntries.Count} virtual files, {conflictText}",
             overlayPreview.Conflicts.Count == 0 && overlayPreview.Warnings.Count == 0
                 ? "AccentBrush"
                 : "WarningBrush");
@@ -6981,7 +7365,9 @@ public partial class MainWindow : Window
 
             if (!string.IsNullOrWhiteSpace(source.LastUpdateStatus))
             {
-                return source.LastUpdateStatus;
+                return IsStaleStartupUpdateStatus(source.LastUpdateStatus)
+                    ? "Check needed"
+                    : source.LastUpdateStatus;
             }
 
             if (source.CanCheckUpdates)
@@ -6995,6 +7381,18 @@ public partial class MainWindow : Window
             }
 
             return "Not linked";
+        }
+
+        private static bool IsStaleStartupUpdateStatus(string status)
+        {
+            return status.StartsWith("Update", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("Update available", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("Needs file check", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("API error", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("Downloading...", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("Downloaded", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("Install queued", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("Download failed", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsActionableWarning(string warning)
