@@ -683,6 +683,27 @@ public partial class MainWindow : Window
         }
     }
 
+    private void DirectLaunchGame_Click(object sender, RoutedEventArgs e)
+    {
+        var installation = GetValidGameInstallationOrShowMessage();
+        if (installation is null)
+        {
+            return;
+        }
+
+        try
+        {
+            StartDirectGame(installation);
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or InvalidOperationException
+            or System.ComponentModel.Win32Exception)
+        {
+            MessageBox.Show(this, exception.Message, "Direct launch failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     private async void VirtualLaunchGame_Click(object sender, RoutedEventArgs e)
     {
         if (_currentProfile is null)
@@ -730,6 +751,27 @@ public partial class MainWindow : Window
 
         try
         {
+            var cleanupRisk = GetVirtualLaunchCleanupRisk(_currentProfile.Id, overlayPreview.GameRootPath);
+            if (cleanupRisk.HasRisk)
+            {
+                var cleanupAnswer = MessageBox.ShowCustom(
+                    this,
+                    BuildVirtualLaunchPreCleanupMessage(cleanupRisk),
+                    "Clean Deploy before virtual launch",
+                    MessageBoxImage.Warning,
+                    new[]
+                    {
+                        new DarkMessageBoxButton("Clean Deploy and Launch", MessageBoxResult.Yes, Primary: true),
+                        new DarkMessageBoxButton("Cancel", MessageBoxResult.Cancel, IsCancel: true)
+                    });
+                if (cleanupAnswer != MessageBoxResult.Yes)
+                {
+                    RefreshDeployStatus();
+                    RefreshVirtualLaunchStatus();
+                    return;
+                }
+            }
+
             var preLaunchCleanResults = CleanManagedDeploymentsBeforeVirtualLaunch(_currentProfile.Id, overlayPreview.GameRootPath);
             if (preLaunchCleanResults.Any(result => result.PreservedFiles > 0 || result.Warnings.Count > 0))
             {
@@ -801,6 +843,19 @@ public partial class MainWindow : Window
         }
     }
 
+    private static void StartDirectGame(GameInstallation installation)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = installation.ExecutablePath,
+            WorkingDirectory = installation.RootPath,
+            UseShellExecute = false
+        };
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("The game process could not be started.");
+    }
+
     private static async Task UpdateVirtualLaunchProgressAsync(VirtualLaunchProgressDialog progress, string status)
     {
         progress.SetStatus(status);
@@ -863,6 +918,27 @@ public partial class MainWindow : Window
         return results
             .Where(result => result.DeletedFiles > 0 || result.PreservedFiles > 0 || result.Warnings.Count > 0)
             .ToArray();
+    }
+
+    private VirtualLaunchCleanupRisk GetVirtualLaunchCleanupRisk(string activeProfileId, string gameRootPath)
+    {
+        var activeManifest = _profileDeployService.LoadManifest(_managerPaths, activeProfileId);
+        var activeFiles = activeManifest is not null && PathsEqual(activeManifest.GameRootPath, gameRootPath)
+            ? activeManifest.Files.Count
+            : 0;
+
+        var otherProfiles = _profiles
+            .Where(profile => !profile.Id.Equals(activeProfileId, StringComparison.OrdinalIgnoreCase))
+            .Select(profile => new
+            {
+                profile.Name,
+                Manifest = _profileDeployService.LoadManifest(_managerPaths, profile.Id)
+            })
+            .Where(item => item.Manifest is not null && PathsEqual(item.Manifest.GameRootPath, gameRootPath))
+            .Select(item => $"{item.Name} ({item.Manifest!.Files.Count} files)")
+            .ToArray();
+
+        return new VirtualLaunchCleanupRisk(activeFiles, otherProfiles);
     }
 
     private void StartVirtualizedGame(ModProfile profile, VirtualizedGameImageBuildResult image)
@@ -6009,8 +6085,8 @@ public partial class MainWindow : Window
             SelectedModNameText.Text = "No mod selected";
             SelectedModIdText.Text = string.Empty;
             SelectedModAuthorText.Text = string.Empty;
-            SelectedModNexusText.Text = string.Empty;
             OpenSelectedModNexusButton.IsEnabled = false;
+            OpenSelectedModNexusButton.ToolTip = null;
             SelectedModImage.Source = null;
             SelectedModLargeImage.Source = null;
             SelectedNexusVersionText.Text = string.Empty;
@@ -6032,10 +6108,10 @@ public partial class MainWindow : Window
         SelectedModAuthorText.Text = string.IsNullOrWhiteSpace(selectedMod.Author)
             ? string.Empty
             : $"Author: {selectedMod.Author}";
-        SelectedModNexusText.Text = string.IsNullOrWhiteSpace(selectedMod.PageUrl)
-            ? string.Empty
-            : selectedMod.PageUrl;
         OpenSelectedModNexusButton.IsEnabled = !string.IsNullOrWhiteSpace(selectedMod.PageUrl);
+        OpenSelectedModNexusButton.ToolTip = string.IsNullOrWhiteSpace(selectedMod.PageUrl)
+            ? "This mod is not linked to Nexus."
+            : selectedMod.PageUrl;
         SetSelectedModImages(selectedMod.IconUrl, selectedMod.LargeImageUrl);
         SelectedNexusVersionText.Text = string.IsNullOrWhiteSpace(selectedMod.NexusVersion)
             ? "unknown"
@@ -6770,6 +6846,7 @@ public partial class MainWindow : Window
             SetStatus(GameStatusText, "Game: not configured", "WarningBrush");
             SetStatus(BepInExStatusText, "BepInEx: waiting for a valid game folder", "MutedTextBrush");
             BepInExDetailText.Text = $"Expected BepInEx {release.Version}";
+            RefreshDeployStatus();
             RefreshVirtualLaunchStatus();
             return;
         }
@@ -6781,6 +6858,7 @@ public partial class MainWindow : Window
             SetStatus(GameStatusText, $"Game: invalid folder. Missing: {string.Join(", ", validation.MissingMarkers)}", "DangerBrush");
             SetStatus(BepInExStatusText, "BepInEx: select a valid game folder first", "MutedTextBrush");
             BepInExDetailText.Text = $"Expected BepInEx {release.Version}";
+            RefreshDeployStatus();
             RefreshVirtualLaunchStatus();
             return;
         }
@@ -6795,6 +6873,7 @@ public partial class MainWindow : Window
         {
             SetStatus(BepInExStatusText, "BepInEx: installed", "AccentBrush");
             BepInExDetailText.Text = $"Game BepInEx is installed. Expected version: {release.Version}.";
+            RefreshDeployStatus();
             RefreshVirtualLaunchStatus();
             return;
         }
@@ -6803,21 +6882,24 @@ public partial class MainWindow : Window
         {
             SetStatus(BepInExStatusText, "BepInEx: incomplete, repair recommended", "WarningBrush");
             BepInExDetailText.Text = $"Missing: {string.Join(", ", state.MissingMarkers)}";
+            RefreshDeployStatus();
             RefreshVirtualLaunchStatus();
             return;
         }
 
         SetStatus(BepInExStatusText, "BepInEx: not installed", "WarningBrush");
         BepInExDetailText.Text = $"Install from ZIP or download {release.ArchiveFileName}.";
+        RefreshDeployStatus();
         RefreshVirtualLaunchStatus();
     }
 
     private void RefreshDeployStatus()
     {
+        var (baseGameState, baseGameStateBrush) = GetBaseGameState();
         if (_currentProfile is null)
         {
-            SetStatus(DeployStatusText, "Physical files: no active profile", "MutedTextBrush");
-            DeployDetailText.Text = "Load or create a profile before using Deploy or Clean.";
+            SetStatus(DeployStatusText, $"Game state: {baseGameState}", baseGameStateBrush);
+            DeployDetailText.Text = "Profile deployment controls need an active profile.";
             return;
         }
 
@@ -6827,17 +6909,17 @@ public partial class MainWindow : Window
             var otherDeployedProfiles = GetOtherDeployedProfiles(_currentProfile.Id);
             if (otherDeployedProfiles.Count > 0)
             {
-                SetStatus(DeployStatusText, "Physical files: another profile is deployed", "WarningBrush");
-                DeployDetailText.Text = $"Deploy will clean {string.Join(", ", otherDeployedProfiles.Select(profile => profile.Name))} before copying this profile.";
+                SetStatus(DeployStatusText, $"Game state: {baseGameState} + deployed profile files", "WarningBrush");
+                DeployDetailText.Text = $"A different profile is physically deployed. Deploy will clear {string.Join(", ", otherDeployedProfiles.Select(profile => profile.Name))} before copying this profile.";
                 return;
             }
 
-            SetStatus(DeployStatusText, "Physical files: clean", "AccentBrush");
+            SetStatus(DeployStatusText, $"Game state: {baseGameState}", baseGameStateBrush);
             DeployDetailText.Text = "No copied profile files are currently managed in the game folder.";
             return;
         }
 
-        SetStatus(DeployStatusText, $"Physical files: {manifest.Files.Count} copied files in game folder", "WarningBrush");
+        SetStatus(DeployStatusText, $"Game state: {baseGameState} + {manifest.Files.Count} deployed files", "WarningBrush");
         var gameRootNote = string.IsNullOrWhiteSpace(_settings.GameRootPath)
             || manifest.GameRootPath.Equals(_settings.GameRootPath, StringComparison.OrdinalIgnoreCase)
                 ? string.Empty
@@ -6845,33 +6927,61 @@ public partial class MainWindow : Window
         DeployDetailText.Text = $"Last updated {manifest.UpdatedAt.LocalDateTime:g}.{gameRootNote}";
     }
 
+    private (string Text, string BrushResourceKey) GetBaseGameState()
+    {
+        if (string.IsNullOrWhiteSpace(_settings.GameRootPath))
+        {
+            return ("not configured", "WarningBrush");
+        }
+
+        var validation = _gameValidator.Validate(_settings.GameRootPath);
+        if (!validation.IsValid)
+        {
+            return ("invalid folder", "DangerBrush");
+        }
+
+        var state = _bepInExProbe.Probe(validation.GameRootPath);
+        if (state.IsComplete)
+        {
+            return ("Vanilla + BepInEx", "AccentBrush");
+        }
+
+        if (state.IsInstalled)
+        {
+            return ("Vanilla + incomplete BepInEx", "WarningBrush");
+        }
+
+        return ("Vanilla", "AccentBrush");
+    }
+
     private void RefreshVirtualLaunchStatus()
     {
+        SetVirtualLaunchButtonCleanupRisk(false);
         if (_currentProfile is null)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Launch: no active profile", "MutedTextBrush");
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: no active profile", "MutedTextBrush");
             return;
         }
 
         if (!_settings.VirtualizationEnabled)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Launch: virtual mode disabled in Settings", "MutedTextBrush");
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: disabled in Settings", "MutedTextBrush");
             return;
         }
 
         if (!_currentProfile.Virtualization.UseExperimentalVirtualizedLaunch)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Launch: virtual mode disabled for this profile", "MutedTextBrush");
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: disabled for this profile", "MutedTextBrush");
             return;
         }
 
         if (string.IsNullOrWhiteSpace(_settings.GameRootPath))
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Launch: choose a game folder first", "WarningBrush");
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: choose a game folder first", "WarningBrush");
             return;
         }
 
@@ -6879,7 +6989,7 @@ public partial class MainWindow : Window
         if (!validation.IsValid)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Launch: invalid game folder", "DangerBrush");
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: invalid game folder", "DangerBrush");
             return;
         }
 
@@ -6887,7 +6997,7 @@ public partial class MainWindow : Window
         if (!state.IsComplete)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Launch: install BepInEx first", "WarningBrush");
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: install BepInEx first", "WarningBrush");
             return;
         }
 
@@ -6895,27 +7005,48 @@ public partial class MainWindow : Window
         if (overlayPreview is null)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, "Launch: profile overlay unavailable", "WarningBrush");
+            SetStatus(VirtualLaunchStatusText, "Virtual launch: profile overlay unavailable", "WarningBrush");
             return;
         }
 
         if (overlayPreview.MissingSources.Count > 0)
         {
             VirtualLaunchButton.IsEnabled = false;
-            SetStatus(VirtualLaunchStatusText, $"Launch: {overlayPreview.MissingSources.Count} missing source files", "DangerBrush");
+            SetStatus(VirtualLaunchStatusText, $"Virtual launch: {overlayPreview.MissingSources.Count} missing source files", "DangerBrush");
             return;
         }
 
         VirtualLaunchButton.IsEnabled = true;
+        var cleanupRisk = GetVirtualLaunchCleanupRisk(_currentProfile.Id, validation.GameRootPath);
+        SetVirtualLaunchButtonCleanupRisk(cleanupRisk.HasRisk);
         var conflictText = overlayPreview.Conflicts.Count == 1
             ? "1 conflict"
             : $"{overlayPreview.Conflicts.Count} conflicts";
         SetStatus(
             VirtualLaunchStatusText,
-            $"Launch: ready, {overlayPreview.ActiveEntries.Count} virtual files, {conflictText}",
+            $"Virtual launch: ready, {overlayPreview.ActiveEntries.Count} mapped files, {conflictText}",
             overlayPreview.Conflicts.Count == 0 && overlayPreview.Warnings.Count == 0
                 ? "AccentBrush"
                 : "WarningBrush");
+    }
+
+    private void SetVirtualLaunchButtonCleanupRisk(bool hasCleanupRisk)
+    {
+        if (hasCleanupRisk)
+        {
+            VirtualLaunchButton.Background = (Brush)FindResource("PanelAltBrush");
+            VirtualLaunchButton.Foreground = (Brush)FindResource("PrimaryTextBrush");
+            VirtualLaunchButton.BorderBrush = (Brush)FindResource("WarningBrush");
+            VirtualLaunchButton.BorderThickness = new Thickness(1.5);
+            VirtualLaunchButton.ToolTip = "Clean Deploy will run before virtual launch because physical profile files are currently deployed.";
+            return;
+        }
+
+        VirtualLaunchButton.Background = (Brush)FindResource("AccentBrush");
+        VirtualLaunchButton.Foreground = (Brush)FindResource("AccentTextBrush");
+        VirtualLaunchButton.BorderBrush = (Brush)FindResource("AccentBrush");
+        VirtualLaunchButton.BorderThickness = new Thickness(1);
+        VirtualLaunchButton.ToolTip = "Starts the game through the experimental virtual profile overlay. Alpha-tested feature: please report bugs.";
     }
 
     private GameInstallation? GetValidGameInstallationOrShowMessage()
@@ -7121,6 +7252,31 @@ public partial class MainWindow : Window
 
         lines.Add(string.Empty);
         lines.Add("Launch anyway?");
+        return string.Join("\n", lines);
+    }
+
+    private static string BuildVirtualLaunchPreCleanupMessage(VirtualLaunchCleanupRisk cleanupRisk)
+    {
+        var lines = new List<string>
+        {
+            "Virtual launch requires a clean game state.",
+            "Clean Deploy will run before launch and remove manager-copied profile files from the real game folder.",
+            string.Empty
+        };
+
+        if (cleanupRisk.ActiveProfileFiles > 0)
+        {
+            lines.Add($"Active profile deploy: {cleanupRisk.ActiveProfileFiles} files");
+        }
+
+        if (cleanupRisk.OtherProfiles.Count > 0)
+        {
+            lines.Add("Other deployed profiles:");
+            lines.AddRange(cleanupRisk.OtherProfiles.Select(profile => $"- {profile}"));
+        }
+
+        lines.Add(string.Empty);
+        lines.Add("Continue?");
         return string.Join("\n", lines);
     }
 
@@ -7677,6 +7833,13 @@ public partial class MainWindow : Window
         int attribute,
         ref int attributeValue,
         int attributeSize);
+
+    private sealed record VirtualLaunchCleanupRisk(
+        int ActiveProfileFiles,
+        IReadOnlyList<string> OtherProfiles)
+    {
+        public bool HasRisk => ActiveProfileFiles > 0 || OtherProfiles.Count > 0;
+    }
 
     private sealed record DependencyRow(string AssemblyName, string Status, string Providers)
     {

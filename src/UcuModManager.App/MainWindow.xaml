@@ -950,12 +950,13 @@
             </Grid.RowDefinitions>
 
             <DockPanel Grid.Row="0" Margin="0,0,0,10">
-                <StackPanel DockPanel.Dock="Left">
+                <StackPanel DockPanel.Dock="Left" VerticalAlignment="Center">
                     <TextBlock Text="Mods" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
                     <TextBlock x:Name="StorageRootText" Style="{StaticResource MutedText}" />
                     <TextBlock x:Name="ProfileStatusText" Style="{StaticResource MutedText}" />
                 </StackPanel>
-                <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
+
+                <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center">
                     <Button Content="Install Mods" Style="{StaticResource PrimaryButton}" Click="InstallModArchives_Click" />
                     <Button Content="Install Folder" Style="{StaticResource SecondaryButton}" Click="InstallModFolder_Click" />
                     <Button x:Name="ToggleAllModsButton"
@@ -973,34 +974,35 @@
                     BorderBrush="{StaticResource AccentBrush}"
                     BorderThickness="1"
                     CornerRadius="7"
-                    Padding="12"
-                    Margin="0,0,0,12">
-                <DockPanel LastChildFill="True">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="220" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Grid.Column="0">
-                            <TextBlock Text="Active Profile" Style="{StaticResource MetricTitle}" />
-                            <TextBlock x:Name="ActiveProfileNameText"
-                                       FontSize="18"
-                                       FontWeight="SemiBold"
-                                       Foreground="{StaticResource AccentBrush}" />
-                        </StackPanel>
-                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                            <TextBlock x:Name="ActiveProfileSummaryText"
-                                       FontSize="13"
-                                       FontWeight="SemiBold"
-                                       Foreground="{StaticResource PrimaryTextBrush}" />
-                            <TextBlock x:Name="ActiveProfileDeployText"
-                                       Style="{StaticResource MutedText}" />
-                        </StackPanel>
-                    </Grid>
-                </DockPanel>
+                    Padding="12,9"
+                    Margin="0,0,0,10">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="210" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Active Profile" Style="{StaticResource MetricTitle}" />
+                        <TextBlock x:Name="ActiveProfileNameText"
+                                   FontSize="18"
+                                   FontWeight="SemiBold"
+                                   Foreground="{StaticResource AccentBrush}"
+                                   TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock x:Name="ActiveProfileSummaryText"
+                                   FontSize="13"
+                                   FontWeight="SemiBold"
+                                   Foreground="{StaticResource PrimaryTextBrush}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="ActiveProfileDeployText"
+                                   Style="{StaticResource MutedText}"
+                                   TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                </Grid>
             </Border>
 
-            <Grid Grid.Row="2" Margin="0,0,0,16">
+            <Grid Grid.Row="2" Margin="0,0,0,10">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
@@ -1012,23 +1014,32 @@
                         BorderBrush="{StaticResource BorderBrushDark}"
                         BorderThickness="1"
                         CornerRadius="6"
-                        Padding="12"
-                        Margin="0,0,12,0">
+                        Padding="12,10"
+                        Margin="0,0,10,0">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Text="Game Setup" Style="{StaticResource SectionTitle}" />
-                        <WrapPanel Grid.Row="1" Margin="0,0,0,6">
-                            <Button Content="Choose Folder" Style="{StaticResource SecondaryButton}" Click="ChooseGameFolder_Click" />
-                            <Button Content="Validate" Style="{StaticResource SecondaryButton}" Click="ValidateGame_Click" />
-                        </WrapPanel>
-                        <TextBlock x:Name="GameRootText" Grid.Row="2" Style="{StaticResource MutedText}" />
-                        <TextBlock x:Name="GameStatusText" Grid.Row="3" Margin="0,5,0,0" TextWrapping="Wrap" FontSize="12" />
+                        <DockPanel Grid.Row="0" LastChildFill="False">
+                            <TextBlock Text="Game Setup"
+                                       Style="{StaticResource SectionTitle}"
+                                       DockPanel.Dock="Left"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,10,4" />
+                            <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
+                                <Button Content="Choose Folder" Style="{StaticResource CompactSecondaryButton}" Click="ChooseGameFolder_Click" />
+                                <Button Content="Validate" Style="{StaticResource CompactSecondaryButton}" Click="ValidateGame_Click" />
+                            </WrapPanel>
+                        </DockPanel>
+                        <TextBlock x:Name="GameRootText"
+                                   Grid.Row="1"
+                                   Style="{StaticResource MutedText}"
+                                   TextTrimming="CharacterEllipsis"
+                                   Margin="0,6,0,0" />
+                        <TextBlock x:Name="GameStatusText" Grid.Row="2" Margin="0,4,0,0" TextWrapping="Wrap" FontSize="12" />
                     </Grid>
                 </Border>
 
@@ -1037,23 +1048,28 @@
                         BorderBrush="{StaticResource BorderBrushDark}"
                         BorderThickness="1"
                         CornerRadius="6"
-                        Padding="12"
-                        Margin="0,0,12,0">
+                        Padding="12,10"
+                        Margin="0,0,10,0">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Text="BepInEx Setup" Style="{StaticResource SectionTitle}" />
-                        <WrapPanel Grid.Row="1" Margin="0,0,0,6">
-                            <Button Content="Install ZIP" Style="{StaticResource SecondaryButton}" Click="InstallBepInExFromZip_Click" />
-                            <Button Content="Download" Style="{StaticResource PrimaryButton}" Click="DownloadAndInstallBepInEx_Click" />
-                        </WrapPanel>
-                        <TextBlock x:Name="BepInExStatusText" Grid.Row="2" TextWrapping="Wrap" FontSize="12" />
-                        <TextBlock x:Name="BepInExDetailText" Grid.Row="3" Margin="0,5,0,0" Style="{StaticResource MutedText}" />
+                        <DockPanel Grid.Row="0" LastChildFill="False">
+                            <TextBlock Text="BepInEx Setup"
+                                       Style="{StaticResource SectionTitle}"
+                                       DockPanel.Dock="Left"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,10,4" />
+                            <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
+                                <Button Content="Install ZIP" Style="{StaticResource CompactSecondaryButton}" Click="InstallBepInExFromZip_Click" />
+                                <Button Content="Download" Style="{StaticResource PrimaryButton}" Padding="10,5" MinHeight="28" Click="DownloadAndInstallBepInEx_Click" />
+                            </WrapPanel>
+                        </DockPanel>
+                        <TextBlock x:Name="BepInExStatusText" Grid.Row="1" Margin="0,6,0,0" TextWrapping="Wrap" FontSize="12" />
+                        <TextBlock x:Name="BepInExDetailText" Grid.Row="2" Margin="0,4,0,0" Style="{StaticResource MutedText}" />
                     </Grid>
                 </Border>
 
@@ -1062,7 +1078,7 @@
                         BorderBrush="{StaticResource BorderBrushDark}"
                         BorderThickness="1"
                         CornerRadius="6"
-                        Padding="12">
+                        Padding="12,10">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
@@ -1070,54 +1086,125 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Text="Game Actions" Style="{StaticResource SectionTitle}" />
+                        <DockPanel Grid.Row="0" LastChildFill="False">
+                            <TextBlock Text="Game Actions"
+                                       Style="{StaticResource SectionTitle}"
+                                       DockPanel.Dock="Left"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,10,4" />
+                            <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
+                                <Button Content="Clean Deploy"
+                                        ToolTip="Return to Vanilla + BepInEx."
+                                        Style="{StaticResource CompactSecondaryButton}"
+                                        Click="CleanDeployment_Click" />
+                                <Button Content="Deploy Files" Style="{StaticResource CompactSecondaryButton}" Click="DeployProfile_Click" />
+                                <Button Content="Launch Direct"
+                                        ToolTip="Starts Casualties Unknown from the selected game folder without virtualizing the active profile."
+                                        Style="{StaticResource CompactSecondaryButton}"
+                                        Click="DirectLaunchGame_Click" />
+                                <Button x:Name="VirtualLaunchButton"
+                                        Content="Launch Virtual"
+                                        ToolTip="Starts the game through the experimental virtual profile overlay. Alpha-tested feature: please report bugs."
+                                        Style="{StaticResource PrimaryButton}"
+                                        Padding="10,5"
+                                        MinHeight="28"
+                                        Click="VirtualLaunchGame_Click" />
+                            </WrapPanel>
+                        </DockPanel>
                         <TextBlock Grid.Row="1"
-                                   Text="Launch uses the virtual profile. Deploy and Clean only affect files copied into the game folder."
+                                   Text="Virtual uses profile overlay; Direct uses current game state; Deploy/Clean copy state."
                                    Style="{StaticResource MutedText}"
                                    TextWrapping="Wrap"
-                                   Margin="0,3,0,8" />
-                        <WrapPanel Grid.Row="2" Margin="0,0,0,6">
-                            <Button Content="Clean Files" Style="{StaticResource SecondaryButton}" Click="CleanDeployment_Click" />
-                            <Button Content="Deploy Files" Style="{StaticResource SecondaryButton}" Click="DeployProfile_Click" />
-                            <Button x:Name="VirtualLaunchButton"
-                                    Content="Launch"
-                                    ToolTip="Starts the game through experimental virtualized launch. This is alpha-tested, so please report bugs."
-                                    Style="{StaticResource PrimaryButton}"
-                                    Click="VirtualLaunchGame_Click" />
-                        </WrapPanel>
-                        <TextBlock x:Name="VirtualLaunchStatusText" Grid.Row="3" TextWrapping="Wrap" FontSize="12" />
-                        <TextBlock x:Name="DeployStatusText" Grid.Row="4" Margin="0,5,0,0" TextWrapping="Wrap" FontSize="12" />
-                        <TextBlock x:Name="DeployDetailText" Grid.Row="5" Margin="0,5,0,0" Style="{StaticResource MutedText}" />
+                                   Margin="0,4,0,5" />
+                        <TextBlock x:Name="VirtualLaunchStatusText" Grid.Row="2" TextWrapping="Wrap" FontSize="12" />
+                        <TextBlock x:Name="DeployStatusText" Grid.Row="3" Margin="0,4,0,0" TextWrapping="Wrap" FontSize="12" />
+                        <TextBlock x:Name="DeployDetailText" Grid.Row="4" Margin="0,4,0,0" Style="{StaticResource MutedText}" />
                     </Grid>
                 </Border>
             </Grid>
 
-            <Grid Grid.Row="3" Margin="0,0,0,14">
+            <Grid Grid.Row="3" Margin="0,0,0,10">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="1.15*" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
 
-                <Border Grid.Column="0" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1" CornerRadius="6" Padding="12,9" Margin="0,0,10,0">
-                    <StackPanel>
-                        <TextBlock Text="Installed" Style="{StaticResource MetricTitle}" />
-                        <TextBlock x:Name="InstalledCountText" Style="{StaticResource MetricValue}" />
-                    </StackPanel>
+                <Border Grid.Column="0" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1" CornerRadius="6" Padding="12,8" Margin="0,0,10,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="3" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0"
+                                Background="{StaticResource AccentBrush}"
+                                CornerRadius="2"
+                                Margin="0,2,10,2" />
+
+                        <Grid Grid.Column="1" Margin="12,0,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Text="Installed Mods" Style="{StaticResource MetricTitle}" />
+
+                            <Grid Grid.Row="1" Margin="0,5,0,0" VerticalAlignment="Center">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="40" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0"
+                                            Orientation="Horizontal"
+                                            HorizontalAlignment="Left"
+                                            VerticalAlignment="Center"
+                                            Margin="0">
+                                    <TextBlock x:Name="InstalledCountText"
+                                               Style="{StaticResource MetricValue}"
+                                               Foreground="{StaticResource AccentBrush}"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,8,0" />
+                                    <TextBlock Text="Mods"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource PrimaryTextBrush}"
+                                               VerticalAlignment="Center" />
+                                </StackPanel>
+
+                                <Border Grid.Column="1"
+                                        Width="1"
+                                        HorizontalAlignment="Center"
+                                        Background="{StaticResource BorderBrushDark}"
+                                        Margin="0,2" />
+
+                                <StackPanel Grid.Column="2"
+                                            Orientation="Horizontal"
+                                            HorizontalAlignment="Left"
+                                            VerticalAlignment="Center"
+                                            Margin="0">
+                                    <TextBlock x:Name="FileCountText"
+                                               Style="{StaticResource MetricValue}"
+                                               Foreground="{StaticResource PrimaryTextBrush}"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,8,0" />
+                                    <TextBlock Text="Files"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource PrimaryTextBrush}"
+                                               VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Grid>
+                        </Grid>
+                    </Grid>
                 </Border>
 
-                <Border Grid.Column="1" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1" CornerRadius="6" Padding="12,9" Margin="0,0,10,0">
-                    <StackPanel>
-                        <TextBlock Text="Files" Style="{StaticResource MetricTitle}" />
-                        <TextBlock x:Name="FileCountText" Style="{StaticResource MetricValue}" />
-                    </StackPanel>
-                </Border>
-
-                <Border Grid.Column="2" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1" CornerRadius="6" Padding="12,9" Margin="0,0,10,0">
+                <Border Grid.Column="1" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1" CornerRadius="6" Padding="12,8" Margin="0,0,10,0">
                     <StackPanel>
                         <DockPanel LastChildFill="True">
                             <Button x:Name="ViewWarningsButton"
@@ -1138,7 +1225,7 @@
                     </StackPanel>
                 </Border>
 
-                <Border Grid.Column="3" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1" CornerRadius="6" Padding="12,9">
+                <Border Grid.Column="2" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1" CornerRadius="6" Padding="12,8">
                     <StackPanel>
                         <DockPanel LastChildFill="True">
                             <Button x:Name="ViewConflictsButton"
@@ -1239,6 +1326,7 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="58" />
                                 <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <Border Width="48"
                                     Height="48"
@@ -1250,19 +1338,17 @@
                                     VerticalAlignment="Top">
                                 <Image x:Name="SelectedModImage" Stretch="UniformToFill" />
                             </Border>
-                            <StackPanel Grid.Column="1">
+                            <StackPanel Grid.Column="1" Margin="0,0,12,0">
                                 <TextBlock x:Name="SelectedModNameText" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" TextWrapping="Wrap" />
                                 <TextBlock x:Name="SelectedModIdText" Style="{StaticResource MutedText}" TextWrapping="Wrap" />
                                 <TextBlock x:Name="SelectedModAuthorText" Style="{StaticResource MutedText}" TextWrapping="Wrap" />
-                                <DockPanel Margin="0,5,0,0" LastChildFill="True">
-                                    <Button x:Name="OpenSelectedModNexusButton"
-                                            Content="Open Nexus"
-                                            Style="{StaticResource SecondaryButton}"
-                                            Click="OpenSelectedModNexus_Click"
-                                            DockPanel.Dock="Left" />
-                                    <TextBlock x:Name="SelectedModNexusText" Style="{StaticResource MutedText}" TextWrapping="Wrap" VerticalAlignment="Center" />
-                                </DockPanel>
                             </StackPanel>
+                            <Button x:Name="OpenSelectedModNexusButton"
+                                    Grid.Column="2"
+                                    Content="Open Nexus"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Click="OpenSelectedModNexus_Click"
+                                    VerticalAlignment="Top" />
                         </Grid>
 
                         <Grid Grid.Row="1" Margin="0,0,0,10">
