@@ -5,7 +5,7 @@
 <h1 align="center">UCU ModManager</h1>
 
 <p align="center">
-  A Windows mod manager for <strong>Casualties Unknown</strong>.
+  Universal Mod Manager for <strong>Casualties Unknown</strong>.
 </p>
 
 > [!WARNING]
