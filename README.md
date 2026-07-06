@@ -12,7 +12,7 @@
 > UCU ModManager is currently in early alpha. Please report bugs, launch errors,
 > Mod installation issues, virtualization problems, or any odd behavior in the manager.
 
-[**Download Latest Pre-Release**]([https://example.com](https://github.com/ArchBlake/UCUModManager/releases/tag/v0.1.3-AV)
+[**Download Latest Pre-Release**](https://github.com/ArchBlake/UCUModManager/releases/tag/v0.1.3-AV)
 [**VirusTotal**](https://www.virustotal.com/gui/file/0d1520ae5e2f43050eb2964e535258815f330c74538bd49be60b836417a482dd)
 
 ## About
