@@ -18,8 +18,6 @@
 
 Metadata from **Jimmyking** - [**GitHub**](https://github.com/jimmyking9999999/Metadata-generator/tree/main)
 
-https://github.com/jimmyking9999999/Metadata-generator/tree/main
-
 ## About
 
 UCU ModManager is a tool for conveniently managing Casualties Unknown mods. It lets you install and remove mods, create separate profiles, configure load order, build and install modpacks, check for updates, and launch the game with a selected mod setup.
