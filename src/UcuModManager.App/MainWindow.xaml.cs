@@ -34,6 +34,8 @@ public partial class MainWindow : Window
     private const int DwmWindowCornerPreferenceAttribute = 33;
     private const int DwmWindowCornerPreferenceRound = 2;
     private const int MaxImageCacheEntries = 96;
+    private const int MaxImageDownloadBytes = 12 * 1024 * 1024;
+    private const int ImageDownloadBufferSize = 81920;
     private const string SteamAppId = "4576510";
     private const string SteamGameFolderName = "Casualties Unknown Demo";
     private const int MinimumDependencyCandidateScore = 100;
@@ -2849,21 +2851,12 @@ public partial class MainWindow : Window
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-            request.Headers.UserAgent.Add(new ProductInfoHeaderValue("UCU-ModManager", "0.1"));
-            using var response = await _imageHttpClient.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-            await using var stream = await response.Content.ReadAsStreamAsync();
-            using var memory = new MemoryStream();
-            await stream.CopyToAsync(memory);
-            memory.Position = 0;
+            var image = await DownloadBitmapImageAsync(uri);
+            if (image is null)
+            {
+                return;
+            }
 
-            var image = new BitmapImage();
-            image.BeginInit();
-            image.CacheOption = BitmapCacheOption.OnLoad;
-            image.StreamSource = memory;
-            image.EndInit();
-            image.Freeze();
             CacheImage(uri.AbsoluteUri, image);
 
             if (requestId == _nexusBrowserImageRequestId)
@@ -2874,6 +2867,7 @@ public partial class MainWindow : Window
         catch (Exception exception) when (exception is HttpRequestException
             or TaskCanceledException
             or IOException
+            or InvalidDataException
             or NotSupportedException
             or ObjectDisposedException)
         {
@@ -4599,19 +4593,16 @@ public partial class MainWindow : Window
 
             try
             {
-                filesResult = _nexusModFilesService.TryLoadAnyCached(
+                filesResult = _nexusModFilesService.TryLoadCached(
                     _managerPaths,
                     result.GameDomain!,
-                    result.NexusModId!.Value);
+                    result.NexusModId!.Value,
+                    fingerprint);
                 if (filesResult is not null)
                 {
                     cached++;
                 }
-                else if (string.IsNullOrWhiteSpace(apiKey))
-                {
-                    failed++;
-                }
-                else
+                else if (!string.IsNullOrWhiteSpace(apiKey))
                 {
                     filesResult = await _nexusModFilesService.LoadOrRefreshAsync(
                         _managerPaths,
@@ -4629,10 +4620,22 @@ public partial class MainWindow : Window
                         refreshed++;
                     }
                 }
+                else
+                {
+                    filesResult = TryLoadCompatibleCachedFiles(result);
+                    if (filesResult is null)
+                    {
+                        failed++;
+                    }
+                    else
+                    {
+                        cached++;
+                    }
+                }
 
                 if (filesResult is null)
                 {
-                    if (result.IsUpdateAvailable)
+                    if (result.IsUpdateAvailable && !CanDownloadUpdate(result))
                     {
                         var unconfirmed = result with
                         {
@@ -4696,6 +4699,44 @@ public partial class MainWindow : Window
         ShowSelectedMod(ModsListView.SelectedItem as ModRow);
         ModsListView.Items.Refresh();
         return confirmedResults;
+    }
+
+    private NexusModFilesLoadResult? TryLoadCompatibleCachedFiles(NexusUpdateCheckResult result)
+    {
+        if (string.IsNullOrWhiteSpace(result.GameDomain) || result.NexusModId is null)
+        {
+            return null;
+        }
+
+        var cached = _nexusModFilesService.TryLoadAnyCached(
+            _managerPaths,
+            result.GameDomain,
+            result.NexusModId.Value);
+        return cached is not null && CachedFilesMatchExpectedLatest(cached.Files, result)
+            ? cached
+            : null;
+    }
+
+    private static bool CachedFilesMatchExpectedLatest(
+        IReadOnlyList<NexusModFileInfo> files,
+        NexusUpdateCheckResult result)
+    {
+        if (files.Count == 0)
+        {
+            return false;
+        }
+
+        if (result.LatestFileId is not null && files.Any(file => file.FileId == result.LatestFileId.Value))
+        {
+            return true;
+        }
+
+        var latestVersion = GetKnownModVersion(result.LatestVersion);
+        return !string.IsNullOrWhiteSpace(latestVersion)
+            && files
+                .Where(IsCurrentNexusFile)
+                .Select(file => GetKnownModVersion(file.Version))
+                .Any(version => !string.IsNullOrWhiteSpace(version) && VersionsEqual(version!, latestVersion));
     }
 
     private void ApplyUpdateResultToRow(NexusUpdateCheckResult result)
@@ -4907,7 +4948,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            Process.Start(new ProcessStartInfo(uri)
+            using var process = Process.Start(new ProcessStartInfo(uri)
             {
                 UseShellExecute = true
             });
@@ -6419,22 +6460,11 @@ public partial class MainWindow : Window
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-            request.Headers.UserAgent.Add(new ProductInfoHeaderValue("UCU-ModManager", "0.1"));
-            using var response = await _imageHttpClient.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-            await using var source = await response.Content.ReadAsStreamAsync();
-            using var memory = new MemoryStream();
-            await source.CopyToAsync(memory);
-            memory.Position = 0;
-
-            var image = new BitmapImage();
-            image.BeginInit();
-            image.StreamSource = memory;
-            image.CacheOption = BitmapCacheOption.OnLoad;
-            image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
-            image.EndInit();
-            image.Freeze();
+            var image = await DownloadBitmapImageAsync(uri);
+            if (image is null)
+            {
+                return;
+            }
 
             CacheImage(uri.AbsoluteUri, image);
             if (requestId == _selectedImageRequestId)
@@ -6444,6 +6474,7 @@ public partial class MainWindow : Window
         }
         catch (Exception exception) when (exception is NotSupportedException
             or IOException
+            or InvalidDataException
             or InvalidOperationException
             or HttpRequestException
             or TaskCanceledException
@@ -6453,6 +6484,58 @@ public partial class MainWindow : Window
             {
                 target.Source = null;
             }
+        }
+    }
+
+    private async Task<BitmapImage?> DownloadBitmapImageAsync(Uri uri)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        request.Headers.UserAgent.Add(new ProductInfoHeaderValue("UCU-ModManager", "0.1"));
+        using var response = await _imageHttpClient
+            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead)
+            .ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+
+        var contentLength = response.Content.Headers.ContentLength;
+        if (contentLength > MaxImageDownloadBytes)
+        {
+            return null;
+        }
+
+        await using var source = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+        using var memory = contentLength is > 0 and <= MaxImageDownloadBytes
+            ? new MemoryStream((int)contentLength.Value)
+            : new MemoryStream();
+        await CopyImageStreamToMemoryAsync(source, memory).ConfigureAwait(false);
+        memory.Position = 0;
+
+        var image = new BitmapImage();
+        image.BeginInit();
+        image.StreamSource = memory;
+        image.CacheOption = BitmapCacheOption.OnLoad;
+        image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+        image.EndInit();
+        image.Freeze();
+        return image;
+    }
+
+    private static async Task CopyImageStreamToMemoryAsync(Stream source, MemoryStream destination)
+    {
+        var buffer = new byte[ImageDownloadBufferSize];
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer).ConfigureAwait(false);
+            if (read == 0)
+            {
+                return;
+            }
+
+            if (destination.Length + read > MaxImageDownloadBytes)
+            {
+                throw new InvalidDataException("Image download exceeded the allowed size.");
+            }
+
+            await destination.WriteAsync(buffer.AsMemory(0, read)).ConfigureAwait(false);
         }
     }
 

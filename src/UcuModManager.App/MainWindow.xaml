@@ -1150,7 +1150,7 @@
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
 
-                            <TextBlock Text="Installed Mods" Style="{StaticResource MetricTitle}" />
+                            <TextBlock Text="Manager Library" Style="{StaticResource MetricTitle}" />
 
                             <Grid Grid.Row="1" Margin="0,5,0,0" VerticalAlignment="Center">
                                 <Grid.ColumnDefinitions>
@@ -1170,7 +1170,7 @@
                                                Foreground="{StaticResource AccentBrush}"
                                                VerticalAlignment="Center"
                                                Margin="0,0,8,0" />
-                                    <TextBlock Text="Mods"
+                                    <TextBlock Text="Stored mods"
                                                FontSize="13"
                                                FontWeight="SemiBold"
                                                Foreground="{StaticResource PrimaryTextBrush}"
@@ -1193,7 +1193,7 @@
                                                Foreground="{StaticResource PrimaryTextBrush}"
                                                VerticalAlignment="Center"
                                                Margin="0,0,8,0" />
-                                    <TextBlock Text="Files"
+                                    <TextBlock Text="Stored files"
                                                FontSize="13"
                                                FontWeight="SemiBold"
                                                Foreground="{StaticResource PrimaryTextBrush}"
