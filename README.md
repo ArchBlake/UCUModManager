@@ -35,9 +35,6 @@ The manager treats a clean game with BepInEx installed as the expected base stat
 - Install mods from archives or folders.
 - Manage separate profiles with their own enabled mods and load order.
 - Launch the game through an experimental virtual profile.
-- Deploy profile files physically when needed.
-- Clean deployed profile files back to the base game state.
-- Check Nexus Mods metadata and detect available updates.
 - Download and install updates when possible.
 - Create and import `.UCU` modpack recipes.
 - Create and import `.UCUP` portable modpacks with included mod files.
