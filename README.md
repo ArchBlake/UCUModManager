@@ -16,7 +16,7 @@
 
 [**VirusTotal**](https://www.virustotal.com/gui/file/0d1520ae5e2f43050eb2964e535258815f330c74538bd49be60b836417a482dd)
 
-Metadata from **Jimmyking** - [**GitHub**](https://github.com/jimmyking9999999/Metadata-generator/tree/main)
+Metadata from [**Jimmyking**](https://github.com/jimmyking9999999) - [**GitHub**](https://github.com/jimmyking9999999/Metadata-generator/tree/main)
 
 ## About
 
