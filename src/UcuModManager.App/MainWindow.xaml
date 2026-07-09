@@ -1432,14 +1432,6 @@
                                         <DockPanel Margin="0,0,0,6" LastChildFill="False">
                                             <TextBlock Text="Files" Style="{StaticResource MutedText}" DockPanel.Dock="Left" VerticalAlignment="Center" />
                                             <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
-                                                <Button x:Name="RefreshNexusFilesButton"
-                                                        Content="Refresh Files"
-                                                        Style="{StaticResource SecondaryButton}"
-                                                        Click="RefreshNexusFiles_Click" />
-                                                <Button x:Name="DownloadSelectedNexusFileButton"
-                                                        Content="Download Selected"
-                                                        Style="{StaticResource SecondaryButton}"
-                                                        Click="DownloadSelectedNexusFile_Click" />
                                                 <Button x:Name="OpenSelectedModFilesPageButton"
                                                         Content="Open Files Page"
                                                         Style="{StaticResource SecondaryButton}"
@@ -1449,8 +1441,7 @@
                                         <TextBlock x:Name="SelectedNexusFilesStatusText" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,6" />
                                         <ListView x:Name="NexusFilesListView"
                                                   Height="170"
-                                                  Margin="0,0,0,10"
-                                                  SelectionChanged="NexusFilesListView_SelectionChanged">
+                                                  Margin="0,0,0,10">
                                             <ListView.View>
                                                 <GridView>
                                                     <GridViewColumn Header="Category" Width="84" DisplayMemberBinding="{Binding Category}" />
@@ -1601,7 +1592,6 @@
                 </StackPanel>
                 <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
                     <Button x:Name="RefreshNexusCatalogButton" Content="Refresh Catalog" Style="{StaticResource SecondaryButton}" Click="RefreshNexusCatalog_Click" />
-                    <Button x:Name="DownloadNexusCatalogButton" Content="Download" Style="{StaticResource PrimaryButton}" Click="DownloadNexusCatalog_Click" />
                     <Button x:Name="OpenNexusCatalogButton" Content="Open Nexus" Style="{StaticResource SecondaryButton}" Click="OpenNexusCatalog_Click" />
                 </WrapPanel>
             </DockPanel>
@@ -1755,7 +1745,7 @@
                                     </Grid.ColumnDefinitions>
                                     <StackPanel Grid.Column="0" Margin="0,0,14,0">
                                         <TextBlock Text=".UCU Recipe" FontWeight="SemiBold" />
-                                        <TextBlock Text="Small file with Nexus links and load order. Mods are downloaded during install."
+                                        <TextBlock Text="Small file with Nexus links and load order. Missing mods are opened for manual download."
                                                    Style="{StaticResource MutedText}"
                                                    TextWrapping="Wrap" />
                                     </StackPanel>
@@ -1859,7 +1849,7 @@
                                     Margin="0,0,8,0">
                                 <StackPanel>
                                     <TextBlock Text=".UCU" FontWeight="SemiBold" />
-                                    <TextBlock Text="Needs Nexus access. Without Premium, open Nexus pages and install archives manually."
+                                    <TextBlock Text="Profile recipe. Uses metadata links; missing archives are downloaded manually from Nexus pages."
                                                Style="{StaticResource MutedText}"
                                                TextWrapping="Wrap" />
                                 </StackPanel>
@@ -1938,7 +1928,7 @@
 
             <StackPanel Grid.Row="0" Margin="0,0,0,12">
                 <TextBlock Text="Settings" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
-                <TextBlock Text="Manager preferences and service connections" Style="{StaticResource MutedText}" />
+                <TextBlock Text="Manager preferences and metadata settings" Style="{StaticResource MutedText}" />
             </StackPanel>
 
             <Border Grid.Row="1"
@@ -1974,51 +1964,35 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Row="0" Text="Nexus Mods" Style="{StaticResource SectionTitle}" />
-                    <TextBlock Grid.Row="1"
-                               Text="API key"
-                               Style="{StaticResource MetricTitle}"
-                               Margin="0,4,0,4" />
-                    <PasswordBox x:Name="NexusApiKeyPasswordBox"
-                                 Grid.Row="2"
+                    <TextBlock Grid.Row="0" Text="Nexus Metadata" Style="{StaticResource SectionTitle}" />
+                    <StackPanel x:Name="AdvancedNexusDomainPanel"
+                                Grid.Row="1"
+                                Grid.RowSpan="2"
+                                Visibility="Collapsed">
+                        <TextBlock Text="Game domain"
+                                   Style="{StaticResource MetricTitle}"
+                                   Margin="0,4,0,4" />
+                        <TextBox x:Name="NexusGameDomainTextBox"
                                  Height="30"
-                                 Width="420"
-                                 HorizontalAlignment="Left" />
-                    <TextBlock Grid.Row="3"
-                               Text="Game domain"
-                               Style="{StaticResource MetricTitle}"
-                               Margin="0,10,0,4" />
-                    <TextBox x:Name="NexusGameDomainTextBox"
-                             Grid.Row="4"
-                             Height="30"
-                             Width="260"
-                             HorizontalAlignment="Left" />
+                                 Width="260"
+                                 HorizontalAlignment="Left"
+                                 LostFocus="NexusGameDomainTextBox_LostFocus" />
+                    </StackPanel>
                     <CheckBox x:Name="AutoLinkNexusOnStartupCheckBox"
-                              Grid.Row="5"
+                              Grid.Row="3"
                               Content="Auto link Nexus metadata on startup"
                               Margin="0,12,0,0"
                               Checked="AutoLinkNexusOnStartupCheckBox_Changed"
                               Unchecked="AutoLinkNexusOnStartupCheckBox_Changed" />
-                    <TextBlock Grid.Row="6"
+                    <TextBlock Grid.Row="4"
                                Text="When enabled, UCU ModManager links installed mods to Nexus metadata after startup without asking."
                                Style="{StaticResource MutedText}"
                                Margin="23,4,0,0" />
-                    <DockPanel Grid.Row="7" Margin="0,10,0,0" LastChildFill="True">
-                        <WrapPanel DockPanel.Dock="Left">
-                            <Button Content="Save" Style="{StaticResource PrimaryButton}" Click="SaveNexusApiKey_Click" />
-                            <Button Content="Test" Style="{StaticResource SecondaryButton}" Click="TestNexusApiKey_Click" />
-                            <Button Content="Clear" Style="{StaticResource SecondaryButton}" Click="ClearNexusApiKey_Click" />
-                        </WrapPanel>
-                        <TextBlock x:Name="NexusApiKeyStatusText"
-                                   Style="{StaticResource MutedText}"
-                                   VerticalAlignment="Center"
-                                   Margin="10,0,0,0" />
-                    </DockPanel>
-                    <TextBlock Grid.Row="8"
+                    <TextBlock Grid.Row="5"
                                Text="Metadata catalog"
                                Style="{StaticResource MetricTitle}"
                                Margin="0,14,0,4" />
-                    <DockPanel Grid.Row="9" LastChildFill="True">
+                    <DockPanel Grid.Row="6" LastChildFill="True">
                         <Button x:Name="RefreshNexusMetadataButton"
                                 DockPanel.Dock="Left"
                                 Content="Refresh Metadata"
@@ -2030,51 +2004,51 @@
                                    VerticalAlignment="Center"
                                    Margin="10,0,0,0" />
                     </DockPanel>
-                    <TextBlock Grid.Row="10"
+                    <TextBlock Grid.Row="7"
                                Text="Interface"
                                Style="{StaticResource SectionTitle}"
                                Margin="0,16,0,4" />
                     <CheckBox x:Name="ShowAdvancedModColumnsCheckBox"
-                              Grid.Row="11"
+                              Grid.Row="8"
                               Content="Advanced Mode"
                               Checked="ShowAdvancedModColumnsCheckBox_Changed"
                               Unchecked="ShowAdvancedModColumnsCheckBox_Changed" />
-                    <TextBlock Grid.Row="12"
+                    <TextBlock Grid.Row="9"
                                Text="Shows the full technical view for mod authors, debugging and detailed file review."
                                Style="{StaticResource MutedText}"
                                Margin="23,4,0,0" />
-                    <TextBlock Grid.Row="13"
+                    <TextBlock Grid.Row="10"
                                Text="Virtualization"
                                Style="{StaticResource SectionTitle}"
                                Margin="0,16,0,4" />
                     <CheckBox x:Name="VirtualizationEnabledCheckBox"
-                              Grid.Row="14"
+                              Grid.Row="11"
                               Content="Enable Virtualized Launch"
                               Checked="VirtualizationEnabledCheckBox_Changed"
                               Unchecked="VirtualizationEnabledCheckBox_Changed" />
-                    <TextBlock Grid.Row="15"
+                    <TextBlock Grid.Row="12"
                                Text="Keeps mods and generated profile state inside the manager folder. The game starts from a linked profile runtime image instead of receiving copied mod files."
                                Style="{StaticResource MutedText}"
                                TextWrapping="Wrap"
                                Margin="23,4,0,0" />
                     <CheckBox x:Name="ExperimentalVirtualizedLaunchCheckBox"
-                              Grid.Row="16"
+                              Grid.Row="13"
                               Content="Use virtualized launch for active profile"
                               Margin="0,10,0,0"
                               Checked="ExperimentalVirtualizedLaunchCheckBox_Changed"
                               Unchecked="ExperimentalVirtualizedLaunchCheckBox_Changed" />
-                    <TextBlock Grid.Row="17"
+                    <TextBlock Grid.Row="14"
                                Text="Saved in the active profile. BepInEx remains installed in the real game folder, while enabled mods are linked into the profile runtime image."
                                Style="{StaticResource MutedText}"
                                TextWrapping="Wrap"
                                Margin="23,4,0,0" />
                     <CheckBox x:Name="RedirectVirtualWritesCheckBox"
-                              Grid.Row="18"
+                              Grid.Row="15"
                               Content="Redirect writes to profile state"
                               Margin="0,10,0,0"
                               Checked="RedirectVirtualWritesCheckBox_Changed"
                               Unchecked="RedirectVirtualWritesCheckBox_Changed" />
-                    <TextBlock Grid.Row="19"
+                    <TextBlock Grid.Row="16"
                                Text="Saved in the active profile. BepInEx logs, generated configs and runtime files stay in the profile runtime folder."
                                Style="{StaticResource MutedText}"
                                TextWrapping="Wrap"

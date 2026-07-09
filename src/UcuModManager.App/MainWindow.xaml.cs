@@ -60,11 +60,9 @@ public partial class MainWindow : Window
     private readonly VirtualizedLaunchPlanWriter _virtualizedLaunchPlanWriter = new();
     private readonly VirtualizedLaunchPlanValidator _virtualizedLaunchPlanValidator = new();
     private readonly VirtualizedGameImageBuilder _virtualizedGameImageBuilder = new();
-    private readonly NexusModDownloadService _nexusModDownloadService = new();
     private readonly NexusModFilesService _nexusModFilesService = new();
     private readonly NexusMetadataCatalogService _nexusMetadataCatalogService = new();
     private readonly NexusMetadataMatcher _nexusMetadataMatcher = new();
-    private readonly SecureSecretStore _secureSecretStore = new();
     private readonly HttpClient _imageHttpClient = new();
     private readonly Dictionary<string, BitmapImage> _imageCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Queue<string> _imageCacheOrder = new();
@@ -239,7 +237,6 @@ public partial class MainWindow : Window
         _imageCache.Clear();
         _imageCacheOrder.Clear();
         _imageHttpClient.Dispose();
-        _nexusModDownloadService.Dispose();
         _nexusModFilesService.Dispose();
         _nexusMetadataCatalogService.Dispose();
     }
@@ -1080,12 +1077,12 @@ public partial class MainWindow : Window
             this,
             BuildMissingDependencyMessage(
                 report,
-                "Automatic Nexus downloads require a configured API key and may require Nexus Premium."),
+                "Installed providers can be enabled automatically. Nexus candidates can be opened for manual download."),
             "Missing dependencies",
             MessageBoxImage.Warning,
             new[]
             {
-                new DarkMessageBoxButton("Fix Dependencies", MessageBoxResult.Yes, Primary: true),
+                new DarkMessageBoxButton("Enable/Open Pages", MessageBoxResult.Yes, Primary: true),
                 new DarkMessageBoxButton(continueButtonText, MessageBoxResult.No),
                 new DarkMessageBoxButton("Cancel", MessageBoxResult.Cancel, IsCancel: true)
             });
@@ -1342,7 +1339,7 @@ public partial class MainWindow : Window
             .ToLowerInvariant();
     }
 
-    private async Task EnableOrDownloadMissingDependencyCandidatesAsync(MissingDependencyReport report, string retryActionText)
+    private Task EnableOrDownloadMissingDependencyCandidatesAsync(MissingDependencyReport report, string retryActionText)
     {
         var installedProviderIds = report.Issues
             .SelectMany(issue => issue.InstalledProviders)
@@ -1351,112 +1348,24 @@ public partial class MainWindow : Window
         EnableInstalledModsInActiveProfile(installedProviderIds.Select(provider => provider.ModId).ToArray());
 
         var candidates = GetUniqueMissingDependencyCandidates(report, includeInstalledProviderIssues: false);
-        if (candidates.Count == 0)
+        if (candidates.Count > 0)
         {
-            var enabledNames = installedProviderIds.Length == 0
-                ? "No automatic dependency candidates were available."
-                : $"Enabled installed dependency providers: {string.Join(", ", installedProviderIds.Select(provider => provider.ModName))}.";
-            MessageBox.Show(
-                this,
-                $"{enabledNames}\n\nReview the profile, then {retryActionText}.",
-                "Missing dependencies",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
+            OpenMissingDependencyCandidatePages(report);
         }
 
-        var apiKey = GetConfiguredNexusApiKey();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            var answer = MessageBox.Show(
-                this,
-                "Nexus API key is not configured, so automatic dependency download is unavailable.\n\nOpen Nexus files pages for manual download instead?",
-                "Missing dependencies",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Information);
-            if (answer == MessageBoxResult.Yes)
-            {
-                OpenMissingDependencyCandidatePages(report);
-            }
-
-            return;
-        }
-
-        var downloadedArchives = new List<string>();
-        var downloadFailures = new List<ModInstallOutcome>();
-        var failedCandidates = new List<MissingDependencyCandidate>();
-        var downloadRootPath = Path.Combine(_managerPaths.DownloadsPath, "dependencies");
-        foreach (var candidate in candidates)
-        {
-            try
-            {
-                var target = await ResolveNexusCatalogDownloadTargetAsync(candidate.Entry, apiKey);
-                if (target is null)
-                {
-                    downloadFailures.Add(ModInstallOutcome.Failure(
-                        $"{GetDependencyCandidateDisplayName(candidate.Entry)}: dependency download",
-                        "Metadata does not contain a usable Nexus file target."));
-                    failedCandidates.Add(candidate);
-                    continue;
-                }
-
-                var source = CreateNexusCatalogSource(candidate.Entry, target);
-                var download = await _nexusModDownloadService.DownloadUpdateArchiveAsync(
-                    source,
-                    target.FileId,
-                    apiKey,
-                    downloadRootPath,
-                    BuildNexusCatalogArchiveName(candidate.Entry, target));
-                downloadedArchives.Add(download.ArchivePath);
-            }
-            catch (Exception exception) when (exception is HttpRequestException
-                or TaskCanceledException
-                or JsonException
-                or IOException
-                or InvalidOperationException
-                or UnauthorizedAccessException)
-            {
-                downloadFailures.Add(ModInstallOutcome.Failure(
-                    $"{GetDependencyCandidateDisplayName(candidate.Entry)}: dependency download",
-                    exception.Message));
-                failedCandidates.Add(candidate);
-            }
-        }
-
-        if (downloadedArchives.Count > 0)
-        {
-            InstallModArchives(downloadedArchives, downloadFailures);
-            MessageBox.Show(
-                this,
-                $"Dependency candidates were downloaded and installed.\n\nReview the active profile, then {retryActionText}.",
-                "Missing dependencies",
-                MessageBoxButton.OK,
-                downloadFailures.Count == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
-            return;
-        }
-
-        ShowModInstallResults(downloadFailures);
-        var fallbackAnswer = MessageBox.Show(
+        var enabledNames = installedProviderIds.Length == 0
+            ? "No installed dependency providers were available."
+            : $"Enabled installed dependency providers: {string.Join(", ", installedProviderIds.Select(provider => provider.ModName))}.";
+        var manualText = candidates.Count == 0
+            ? "No Nexus page candidates were available for manual download."
+            : $"Opened Nexus pages for manual dependency download: {Math.Min(candidates.Count, 8)}.";
+        MessageBox.Show(
             this,
-            "No dependency archives were downloaded.\n\nAutomatic Nexus downloads may require Nexus Premium for this account.\nOpen Nexus files pages for manual download?",
+            $"{enabledNames}\n{manualText}\n\nReview the profile, then {retryActionText}.",
             "Missing dependencies",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning);
-        if (fallbackAnswer == MessageBoxResult.Yes)
-        {
-            OpenMissingDependencyCandidatePages(report with
-            {
-                Issues = report.Issues
-                    .Select(issue => issue with
-                    {
-                        Candidates = issue.Candidates
-                            .Where(candidate => failedCandidates.Any(failed => SameNexusCatalogEntry(failed.Entry, candidate.Entry)))
-                            .ToArray()
-                    })
-                    .Where(issue => issue.Candidates.Count > 0)
-                    .ToArray()
-            });
-        }
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+        return Task.CompletedTask;
     }
 
     private void OpenMissingDependencyCandidatePages(MissingDependencyReport report)
@@ -2360,7 +2269,7 @@ public partial class MainWindow : Window
 
         if (!summary.UsedApi)
         {
-            lines.Add("Nexus API was not used for matching. The metadata catalog provided ids, versions, and images.");
+            lines.Add("The metadata catalog provided ids, versions, and images for matching.");
         }
 
         if (summary.Details.Count > 0)
@@ -2401,7 +2310,6 @@ public partial class MainWindow : Window
 
     private async void UpdateMods_Click(object sender, RoutedEventArgs e)
     {
-        var apiKey = GetConfiguredNexusApiKey();
         var checkableEntries = GetCheckableNexusEntries();
         if (checkableEntries.Length == 0)
         {
@@ -2411,125 +2319,33 @@ public partial class MainWindow : Window
 
         try
         {
-            var checkProgress = ShowProgress("Update Mods", "Checking updates", "Refreshing metadata...");
+            var progress = ShowProgress("Update Mods", "Checking metadata updates", "Refreshing metadata...");
             var results = await CheckNexusUpdatesAsync(checkableEntries);
-            CloseProgress(checkProgress);
-            var updatePlans = BuildNexusUpdatePlans(checkableEntries, results);
-            var skippedUpdates = results
-                .Where(result => result.IsUpdateAvailable)
-                .Where(result => !CanDownloadUpdate(result))
-                .ToArray();
-            var apiErrorFallbacks = results
-                .Where(result => !string.IsNullOrWhiteSpace(result.ErrorMessage))
-                .ToArray();
-            if (updatePlans.Count == 0)
-            {
-                ShowNoDownloadableUpdates(results, skippedUpdates);
-                OfferManualFallbackForUpdates(skippedUpdates.Concat(apiErrorFallbacks));
-                return;
-            }
+            CloseProgress(progress);
 
-            if (string.IsNullOrWhiteSpace(apiKey))
+            var updates = results
+                .Where(result => result.IsUpdateAvailable)
+                .Where(result => result.NexusModId is not null)
+                .Where(result => !string.IsNullOrWhiteSpace(result.GameDomain))
+                .GroupBy(result => $"{result.GameDomain}:{result.NexusModId}", StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToArray();
+            if (updates.Length == 0)
             {
-                MessageBox.Show(
-                    this,
-                    "Nexus API key is not configured. Update checks use the metadata catalog, but automatic downloads still need your Nexus Mods API key. You can download manually from Nexus and use Install Mods.",
-                    "Nexus API key required",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-                OfferManualFallbackForUpdates(updatePlans.Select(plan => plan.Result).Concat(skippedUpdates));
-                SelectNavigationView("Settings");
+                ShowUpdateCheckResults(results);
                 return;
             }
 
             var answer = MessageBox.Show(
                 this,
-                BuildUpdateModsPrompt(updatePlans, skippedUpdates),
+                BuildManualUpdatePrompt(updates),
                 "Update Mods",
                 MessageBoxButton.YesNo,
-                MessageBoxImage.Warning);
-            if (answer != MessageBoxResult.Yes)
+                MessageBoxImage.Information);
+            if (answer == MessageBoxResult.Yes)
             {
-                return;
+                OpenManualUpdatePages(updates);
             }
-
-            var downloadedArchives = new List<string>();
-            var downloadFailures = new List<ModInstallOutcome>();
-            var failedDownloadPlans = new List<NexusModUpdatePlan>();
-            var downloadRootPath = Path.Combine(_managerPaths.DownloadsPath, "nexus-updates");
-            var progress = ShowProgress("Update Mods", "Downloading updates", "Starting downloads...");
-            foreach (var updatePlan in updatePlans)
-            {
-                var row = _mods.FirstOrDefault(mod => mod.Id.Equals(updatePlan.Entry.Mod.Id, StringComparison.OrdinalIgnoreCase));
-                if (row is not null)
-                {
-                    row.UpdateStatus = "Downloading...";
-                    ModsListView.Items.Refresh();
-                }
-                UpdateProgress(progress, $"Downloading {updatePlan.Entry.Mod.Name}...");
-
-                try
-                {
-                    var source = updatePlan.Entry.Manifest.Source! with
-                    {
-                        GameDomain = updatePlan.Result.GameDomain,
-                        ModId = updatePlan.Result.NexusModId,
-                        FileId = updatePlan.Result.LatestFileId,
-                        FileVersion = updatePlan.Result.LatestVersion
-                    };
-                    var download = await _nexusModDownloadService.DownloadUpdateArchiveAsync(
-                        source,
-                        updatePlan.Result.LatestFileId!.Value,
-                        apiKey,
-                        downloadRootPath,
-                        BuildNexusUpdateArchiveFileName(updatePlan));
-                    downloadedArchives.Add(download.ArchivePath);
-
-                    if (row is not null)
-                    {
-                        row.UpdateStatus = "Downloaded";
-                    }
-                }
-                catch (Exception exception) when (exception is HttpRequestException
-                    or TaskCanceledException
-                    or JsonException
-                    or IOException
-                    or InvalidOperationException
-                    or UnauthorizedAccessException)
-                {
-                    downloadFailures.Add(ModInstallOutcome.Failure($"{updatePlan.Entry.Mod.Name}: Nexus download", exception.Message));
-                    failedDownloadPlans.Add(updatePlan);
-                    if (row is not null)
-                    {
-                        row.UpdateStatus = "Download failed";
-                    }
-                }
-
-                ModsListView.Items.Refresh();
-            }
-
-            if (downloadedArchives.Count == 0)
-            {
-                CloseProgress(progress);
-                ShowModInstallResults(downloadFailures);
-                OfferManualFallbackForUpdates(skippedUpdates
-                    .Concat(apiErrorFallbacks)
-                    .Concat(failedDownloadPlans.Select(plan => plan.Result)));
-                return;
-            }
-
-            UpdateProgress(progress, "Installing downloaded archives...");
-            foreach (var row in _mods.Where(mod => downloadedArchives.Count > 0 && mod.UpdateStatus == "Downloaded"))
-            {
-                row.UpdateStatus = "Install queued";
-            }
-
-            ModsListView.Items.Refresh();
-            CloseProgress(progress);
-            InstallModArchives(downloadedArchives, downloadFailures);
-            OfferManualFallbackForUpdates(skippedUpdates
-                .Concat(apiErrorFallbacks)
-                .Concat(failedDownloadPlans.Select(plan => plan.Result)));
         }
         catch (Exception exception) when (exception is HttpRequestException
             or TaskCanceledException
@@ -2809,7 +2625,6 @@ public partial class MainWindow : Window
             NexusCatalogStatsText.Text = string.Empty;
             NexusCatalogDescriptionText.Text = string.Empty;
             NexusCatalogImage.Source = null;
-            DownloadNexusCatalogButton.IsEnabled = false;
             OpenNexusCatalogButton.IsEnabled = false;
             return;
         }
@@ -2819,7 +2634,6 @@ public partial class MainWindow : Window
         NexusCatalogMetaText.Text = $"{row.Version} - {row.Author} - Nexus #{row.NexusModIdText}";
         NexusCatalogStatsText.Text = $"Downloads: {row.Downloads} - Endorsements: {FormatNullableCount(entry.Statistics?.Endorsements)}";
         NexusCatalogDescriptionText.Text = CleanNexusDescription(entry.Description);
-        DownloadNexusCatalogButton.IsEnabled = row.CanDownload;
         OpenNexusCatalogButton.IsEnabled = !string.IsNullOrWhiteSpace(entry.NexusPageUrl);
         SetNexusCatalogImage(entry.Images.FirstOrDefault() ?? entry.BestIconUrl);
     }
@@ -2874,202 +2688,12 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void DownloadNexusCatalog_Click(object sender, RoutedEventArgs e)
-    {
-        if (NexusCatalogListView.SelectedItem is not NexusCatalogRow selectedRow)
-        {
-            MessageBox.Show(this, "Select a Nexus mod first.", "No mod selected", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var apiKey = GetConfiguredNexusApiKey();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            ShowNexusCatalogManualFallback(selectedRow.Entry, "Nexus API key is required to download mods automatically.");
-            return;
-        }
-
-        DownloadNexusCatalogButton.IsEnabled = false;
-        NexusCatalogStatusText.Text = $"Preparing download: {selectedRow.Name}";
-
-        try
-        {
-            var target = await ResolveNexusCatalogDownloadTargetAsync(selectedRow.Entry, apiKey);
-            if (target is null)
-            {
-                ShowNexusCatalogManualFallback(selectedRow.Entry, "This catalog entry does not expose a downloadable Nexus file id.");
-                return;
-            }
-
-            var source = CreateNexusCatalogSource(selectedRow.Entry, target);
-            var download = await _nexusModDownloadService.DownloadUpdateArchiveAsync(
-                source,
-                target.FileId,
-                apiKey,
-                Path.Combine(_managerPaths.DownloadsPath, "nexus-browser"),
-                BuildNexusCatalogArchiveName(selectedRow.Entry, target));
-            NexusCatalogStatusText.Text = $"Downloaded {selectedRow.Name}. Installing...";
-            InstallModArchives(new[] { download.ArchivePath });
-            NexusCatalogStatusText.Text = $"Installed {selectedRow.Name}.";
-        }
-        catch (Exception exception) when (exception is HttpRequestException
-            or TaskCanceledException
-            or JsonException
-            or IOException
-            or InvalidOperationException
-            or UnauthorizedAccessException)
-        {
-            NexusCatalogStatusText.Text = "Nexus download failed.";
-            ShowNexusCatalogManualFallback(selectedRow.Entry, exception.Message);
-        }
-        finally
-        {
-            DownloadNexusCatalogButton.IsEnabled = NexusCatalogListView.SelectedItem is NexusCatalogRow row && row.CanDownload;
-        }
-    }
-
-    private async Task<NexusDownloadTarget?> ResolveNexusCatalogDownloadTargetAsync(
-        NexusMetadataCatalogEntry entry,
-        string apiKey)
-    {
-        var downloadReference = entry.DownloadReference;
-        var gameDomain = NormalizeNexusGameDomain(FirstNonEmpty(entry.NexusGameDomain, downloadReference?.GameDomain));
-        var modId = entry.NexusModId ?? downloadReference?.ModId;
-        if (string.IsNullOrWhiteSpace(gameDomain) || modId is null)
-        {
-            return null;
-        }
-
-        var fingerprint = NexusModFilesService.BuildCacheFingerprint(
-            gameDomain,
-            modId.Value,
-            downloadReference?.FileId,
-            entry.BestVersion,
-            entry.Name);
-        var filesResult = await _nexusModFilesService.LoadOrRefreshAsync(
-            _managerPaths,
-            gameDomain,
-            modId.Value,
-            fingerprint,
-            apiKey);
-        var file = ChooseBestNexusFile(filesResult.Files, entry.BestVersion);
-        if (file is not null)
-        {
-            return new NexusDownloadTarget(gameDomain, modId.Value, file.FileId, file.Version, file.FileName);
-        }
-
-        return downloadReference?.FileId is null
-            ? null
-            : new NexusDownloadTarget(
-                gameDomain,
-                modId.Value,
-                downloadReference.FileId.Value,
-                GetKnownModVersion(entry.BestVersion) ?? entry.BestVersion,
-                entry.Name);
-    }
-
-    private static NexusModFileInfo? ChooseBestNexusFile(
-        IReadOnlyList<NexusModFileInfo> files,
-        string? preferredVersion)
-    {
-        if (files.Count == 0)
-        {
-            return null;
-        }
-
-        var currentFiles = files.Where(file => !file.IsOldVersion).ToArray();
-        var candidates = currentFiles.Length == 0 ? files : currentFiles;
-        var knownPreferredVersion = GetKnownModVersion(preferredVersion);
-        if (!string.IsNullOrWhiteSpace(knownPreferredVersion))
-        {
-            var versionMatch = candidates.FirstOrDefault(file => VersionsEqual(file.Version, knownPreferredVersion));
-            if (versionMatch is not null)
-            {
-                return versionMatch;
-            }
-        }
-
-        return ChooseLatestUpdateFile(candidates);
-    }
-
-    private ModSourceInfo CreateNexusCatalogSource(
-        NexusMetadataCatalogEntry entry,
-        NexusDownloadTarget target)
-    {
-        return new ModSourceInfo(
-            "NexusMods",
-            target.GameDomain,
-            target.ModId,
-            target.FileId,
-            GetKnownModVersion(target.Version) ?? GetKnownModVersion(entry.BestVersion),
-            null,
-            target.FileName ?? entry.Name ?? $"nexus-{target.ModId}-{target.FileId}.zip",
-            null,
-            GetKnownModVersion(entry.BestVersion) ?? entry.BestVersion,
-            DateTimeOffset.UtcNow,
-            entry.Name,
-            entry.Author,
-            entry.NexusPageUrl,
-            entry.BestIconUrl,
-            entry.Images,
-            entry.Description,
-            entry.Statistics?.Endorsements,
-            entry.Statistics?.UniqueDownloads,
-            entry.Statistics?.TotalDownloads,
-            entry.Statistics?.TotalViews,
-            target.FileId);
-    }
-
-    private static string BuildNexusCatalogArchiveName(
-        NexusMetadataCatalogEntry entry,
-        NexusDownloadTarget target)
-    {
-        var name = SanitizeFileNameSegment(entry.Name) ?? "nexus-mod";
-        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        return $"{name}-{target.ModId}-{target.FileId}-{timestamp}.zip";
-    }
-
     private void OpenNexusCatalog_Click(object sender, RoutedEventArgs e)
     {
         if (NexusCatalogListView.SelectedItem is NexusCatalogRow selectedRow
             && !string.IsNullOrWhiteSpace(selectedRow.Entry.NexusPageUrl))
         {
             OpenUri(selectedRow.Entry.NexusPageUrl, "Open Nexus page failed");
-        }
-    }
-
-    private void ShowNexusCatalogManualFallback(NexusMetadataCatalogEntry entry, string reason)
-    {
-        var lines = new List<string>
-        {
-            reason,
-            string.Empty,
-            "Automatic downloads may require Nexus Premium for this account.",
-            "Open the Nexus files page manually?"
-        };
-        var answer = MessageBox.Show(
-            this,
-            string.Join("\n", lines),
-            "Manual Nexus Download",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Information);
-        if (answer != MessageBoxResult.Yes)
-        {
-            return;
-        }
-
-        var downloadReference = entry.DownloadReference;
-        var gameDomain = FirstNonEmpty(entry.NexusGameDomain, downloadReference?.GameDomain);
-        var modId = entry.NexusModId ?? downloadReference?.ModId;
-        if (!string.IsNullOrWhiteSpace(gameDomain) && modId is not null)
-        {
-            OpenNexusFilesPage(gameDomain, modId.Value);
-            return;
-        }
-
-        if (!string.IsNullOrWhiteSpace(entry.NexusPageUrl))
-        {
-            OpenUri(entry.NexusPageUrl, "Open Nexus page failed");
         }
     }
 
@@ -3496,31 +3120,11 @@ public partial class MainWindow : Window
             return;
         }
 
-        var apiKey = _importedUcuModpackIsPortable ? null : GetConfiguredNexusApiKey();
-        if (!_importedUcuModpackIsPortable && string.IsNullOrWhiteSpace(apiKey))
-        {
-            _manualDownloadModpackKeys.Clear();
-            foreach (var mod in _importedUcuModpack.Mods)
-            {
-                if (GetUcuModId(mod) is not null && !string.IsNullOrWhiteSpace(GetUcuGameDomain(mod)))
-                {
-                    _manualDownloadModpackKeys.Add(BuildUcuModpackKey(mod));
-                }
-            }
-
-            ShowImportedUcuModpack(_importedUcuModpack, _importedUcuModpackPath);
-            MessageBox.Show(
-                this,
-                "Nexus API key is required to download a .UCU recipe automatically. Use Open All Nexus Pages for manual download, or import a .UCUP portable modpack.",
-                "Nexus API key required",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
-        }
-
         var answer = MessageBox.Show(
             this,
-            $"Download and install '{_importedUcuModpack.ProfileName}' as a new profile?\n\nMods: {_importedUcuModpack.Mods.Count}",
+            _importedUcuModpackIsPortable
+                ? $"Install '{_importedUcuModpack.ProfileName}' as a new profile?\n\nMods: {_importedUcuModpack.Mods.Count}"
+                : $"Create '{_importedUcuModpack.ProfileName}' as a new profile from this .UCU recipe?\n\nInstalled matching mods will be linked. Missing mods will be marked for manual Nexus download.",
             "Install .UCU Modpack",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);
@@ -3542,7 +3146,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                await InstallUcuModpackAsync(_importedUcuModpack, apiKey!, progress);
+                await InstallUcuModpackAsync(_importedUcuModpack, progress);
             }
             CloseProgress(progress);
         }
@@ -3564,131 +3168,30 @@ public partial class MainWindow : Window
 
     private async Task InstallUcuModpackAsync(
         UcuModpackPackage package,
-        string apiKey,
         VirtualLaunchProgressDialog? progress)
     {
         _manualDownloadModpackKeys.Clear();
         var modIdsByPriority = new Dictionary<int, string>();
         var outcomes = new List<ModInstallOutcome>();
-        var importPlans = new List<UcuModpackInstallPlan>();
-        var downloadRootPath = Path.Combine(
-            _managerPaths.DownloadsPath,
-            "ucu-modpacks",
-            $"{SanitizeFileNameSegment(package.ProfileName) ?? "modpack"}-{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}");
 
         foreach (var mod in package.Mods.OrderBy(mod => mod.Priority))
         {
-            var existing = FindInstalledLibraryEntryForUcuMod(mod, requireSameFile: true);
+            ModpacksStatusText.Text = $"Matching {mod.Name}...";
+            UpdateProgress(progress, $"Matching {mod.Name}...");
+
+            var existing = FindInstalledLibraryEntryForUcuMod(mod, requireSameFile: true)
+                ?? FindInstalledLibraryEntryForUcuMod(mod, requireSameFile: false)
+                ?? FindInstalledLibraryEntryByNameAndVersion(mod);
             if (existing is not null)
             {
                 modIdsByPriority[mod.Priority] = existing.Mod.Id;
                 continue;
             }
 
-            try
-            {
-                ModpacksStatusText.Text = $"Downloading {mod.Name}...";
-                UpdateProgress(progress, $"Downloading {mod.Name}...");
-                var target = await ResolveUcuDownloadTargetAsync(mod, apiKey);
-                if (target is null)
-                {
-                    _manualDownloadModpackKeys.Add(BuildUcuModpackKey(mod));
-                    outcomes.Add(ModInstallOutcome.Failure(mod.Name, "No Nexus file id is available for automatic download."));
-                    continue;
-                }
-
-                var source = CreateUcuDownloadSource(mod, target);
-                var download = await _nexusModDownloadService.DownloadUpdateArchiveAsync(
-                    source,
-                    target.FileId,
-                    apiKey,
-                    downloadRootPath,
-                    BuildUcuArchiveName(mod, target));
-                var preview = _importService.PreviewZip(download.ArchivePath, _managerPaths);
-                importPlans.Add(new UcuModpackInstallPlan(mod, download.ArchivePath, preview));
-            }
-            catch (Exception exception) when (exception is HttpRequestException
-                or TaskCanceledException
-                or JsonException
-                or IOException
-                or InvalidDataException
-                or InvalidOperationException
-                or UnauthorizedAccessException)
-            {
-                _manualDownloadModpackKeys.Add(BuildUcuModpackKey(mod));
-                outcomes.Add(ModInstallOutcome.Failure(mod.Name, exception.Message));
-            }
-        }
-
-        if (importPlans.Count > 0)
-        {
-            var plannedImports = importPlans
-                .Select(plan => new ModInstallPlan(plan.ArchivePath, plan.Preview))
-                .ToArray();
-            var deployedUpdateModIds = plannedImports
-                .Where(plan => plan.Preview.Action == ModImportAction.Updated)
-                .Where(plan => CountDeployedFilesForMod(plan.Preview.ModId) > 0)
-                .Select(plan => plan.Preview.ModId)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (deployedUpdateModIds.Count > 0)
-            {
-                var cleanAnswer = MessageBox.Show(
-                    this,
-                    BuildDeployedUpdatePrompt(plannedImports, deployedUpdateModIds),
-                    "Update deployed mods",
-                    MessageBoxButton.YesNoCancel,
-                    MessageBoxImage.Warning);
-                if (cleanAnswer == MessageBoxResult.Cancel)
-                {
-                    return;
-                }
-
-                if (cleanAnswer == MessageBoxResult.Yes)
-                {
-                    var cleanResults = CleanDeploymentsForMods(deployedUpdateModIds);
-                    if (cleanResults.Any(result => result.PreservedFiles > 0))
-                    {
-                        RefreshDeployStatus();
-                        MessageBox.Show(this, BuildBlockedUpdateCleanupMessage(cleanResults), "Update stopped", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        return;
-                    }
-                }
-            }
-        }
-
-        foreach (var plan in importPlans)
-        {
-            try
-            {
-                ModpacksStatusText.Text = $"Installing {plan.Mod.Name}...";
-                UpdateProgress(progress, $"Installing {plan.Mod.Name}...");
-                var result = _importService.ImportZip(plan.ArchivePath, _managerPaths);
-                modIdsByPriority[plan.Mod.Priority] = result.Manifest.Mod.Id;
-                outcomes.Add(ModInstallOutcome.Success(Path.GetFileName(plan.ArchivePath), result));
-            }
-            catch (Exception exception) when (exception is IOException
-                or InvalidDataException
-                or InvalidOperationException
-                or UnauthorizedAccessException)
-            {
-                outcomes.Add(ModInstallOutcome.Failure(Path.GetFileName(plan.ArchivePath), exception.Message));
-            }
-        }
-
-        _libraryEntries = _libraryService.LoadLibrary(_managerPaths);
-        foreach (var mod in package.Mods.OrderBy(mod => mod.Priority))
-        {
-            if (modIdsByPriority.ContainsKey(mod.Priority))
-            {
-                continue;
-            }
-
-            var existing = FindInstalledLibraryEntryForUcuMod(mod, requireSameFile: false);
-            if (existing is not null)
-            {
-                modIdsByPriority[mod.Priority] = existing.Mod.Id;
-                _manualDownloadModpackKeys.Remove(BuildUcuModpackKey(mod));
-            }
+            _manualDownloadModpackKeys.Add(BuildUcuModpackKey(mod));
+            outcomes.Add(ModInstallOutcome.Failure(
+                mod.Name,
+                "Archive is not installed. Open the Nexus files page, download the archive manually, then install it with Install Mods."));
         }
 
         if (modIdsByPriority.Count == 0)
@@ -3697,7 +3200,7 @@ public partial class MainWindow : Window
             ShowModInstallResults(outcomes);
             MessageBox.Show(
                 this,
-                "No mods were installed, so an empty profile was not created.\n\nUse Open All Nexus Pages to download the required mods manually, then install the downloaded archives with Install Mods.",
+                "No matching installed mods were found, so an empty profile was not created.\n\nUse Open All Nexus Pages to download the required mods manually, then install the downloaded archives with Install Mods.",
                 "Install .UCU incomplete",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
@@ -3713,8 +3216,20 @@ public partial class MainWindow : Window
         ModpacksStatusText.Text = _manualDownloadModpackKeys.Count == 0
             ? $"Installed .UCU profile '{profile.Name}'."
             : $"Installed partial .UCU profile '{profile.Name}'. Manual downloads needed: {_manualDownloadModpackKeys.Count}.";
-        ShowModInstallResults(outcomes);
-        MessageBox.Show(this, $"Created profile '{profile.Name}'.", "Install .UCU complete", MessageBoxButton.OK, MessageBoxImage.Information);
+        if (outcomes.Count > 0)
+        {
+            ShowModInstallResults(outcomes);
+        }
+
+        MessageBox.Show(
+            this,
+            _manualDownloadModpackKeys.Count == 0
+                ? $"Created profile '{profile.Name}'."
+                : $"Created partial profile '{profile.Name}'.\n\nOpen All Nexus Pages will show the missing mods for manual download.",
+            "Install .UCU complete",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+        await Task.CompletedTask;
     }
 
     private void InstallPortableUcuModpack(
@@ -3960,42 +3475,6 @@ public partial class MainWindow : Window
         });
     }
 
-    private async Task<NexusDownloadTarget?> ResolveUcuDownloadTargetAsync(
-        UcuModpackMod mod,
-        string apiKey)
-    {
-        var gameDomainValue = GetUcuGameDomain(mod);
-        var modId = GetUcuModId(mod);
-        if (modId is null || string.IsNullOrWhiteSpace(gameDomainValue))
-        {
-            return null;
-        }
-
-        var gameDomain = NormalizeNexusGameDomain(gameDomainValue);
-        var fileId = GetUcuFileId(mod);
-        if (fileId is not null)
-        {
-            return new NexusDownloadTarget(gameDomain, modId.Value, fileId.Value, mod.Version, mod.SourceArchiveFileName);
-        }
-
-        var fingerprint = NexusModFilesService.BuildCacheFingerprint(
-            gameDomain,
-            modId.Value,
-            null,
-            mod.Version,
-            mod.SourceArchiveFileName);
-        var filesResult = await _nexusModFilesService.LoadOrRefreshAsync(
-            _managerPaths,
-            gameDomain,
-            modId.Value,
-            fingerprint,
-            apiKey);
-        var file = ChooseBestNexusFile(filesResult.Files, mod.Version);
-        return file is null
-            ? null
-            : new NexusDownloadTarget(gameDomain, modId.Value, file.FileId, file.Version, file.FileName);
-    }
-
     private static string? BuildUcuDownloadUrl(string? gameDomain, int? modId, int? fileId)
     {
         if (string.IsNullOrWhiteSpace(gameDomain) || modId is null)
@@ -4057,39 +3536,6 @@ public partial class MainWindow : Window
         return new NexusMetadataDownloadReference(segments[0], modId, null);
     }
 
-    private static ModSourceInfo CreateUcuDownloadSource(UcuModpackMod mod, NexusDownloadTarget target)
-    {
-        return new ModSourceInfo(
-            "NexusMods",
-            target.GameDomain,
-            target.ModId,
-            target.FileId,
-            GetKnownModVersion(target.Version) ?? GetKnownModVersion(mod.Version),
-            null,
-            target.FileName ?? mod.SourceArchiveFileName ?? mod.Name,
-            null,
-            GetKnownModVersion(mod.Version) ?? mod.Version,
-            DateTimeOffset.UtcNow,
-            mod.Name,
-            null,
-            mod.PageUrl,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            target.FileId);
-    }
-
-    private static string BuildUcuArchiveName(UcuModpackMod mod, NexusDownloadTarget target)
-    {
-        var name = SanitizeFileNameSegment(mod.Name) ?? "ucu-mod";
-        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        return $"{name}-{target.ModId}-{target.FileId}-{timestamp}.zip";
-    }
-
     private static string BuildPortableImportArchiveFileName(UcuModpackMod mod)
     {
         var sourceName = SanitizeFileNameSegment(mod.SourceArchiveFileName);
@@ -4109,85 +3555,41 @@ public partial class MainWindow : Window
         return Regex.IsMatch(Path.GetFileNameWithoutExtension(fileName), @"^\d{3}-", RegexOptions.CultureInvariant);
     }
 
-    private void SaveNexusApiKey_Click(object sender, RoutedEventArgs e)
-    {
-        var apiKey = NexusApiKeyPasswordBox.Password.Trim();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            MessageBox.Show(this, "Enter a Nexus Mods API key first.", "Nexus API key required", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        try
-        {
-            SaveNexusGameDomain();
-            _secureSecretStore.SaveNexusApiKey(_managerPaths, apiKey);
-            NexusApiKeyPasswordBox.Password = string.Empty;
-            RefreshSettingsStatus();
-            MessageBox.Show(this, "Nexus API key saved for the current Windows user.", "Nexus API key saved", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
-        {
-            MessageBox.Show(this, exception.Message, "Save failed", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-    }
-
-    private async void TestNexusApiKey_Click(object sender, RoutedEventArgs e)
-    {
-        var apiKey = NexusApiKeyPasswordBox.Password.Trim();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            apiKey = GetConfiguredNexusApiKey() ?? string.Empty;
-        }
-
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            MessageBox.Show(this, "Enter or save a Nexus Mods API key first.", "Nexus API key required", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        try
-        {
-            SaveNexusGameDomain();
-            NexusApiKeyStatusText.Text = "Testing Nexus API key...";
-            var userName = await TestNexusApiKey(apiKey);
-            NexusApiKeyStatusText.Text = string.IsNullOrWhiteSpace(userName)
-                ? "Nexus API key is valid."
-                : $"Nexus API key is valid for {userName}.";
-            NexusApiKeyStatusText.Foreground = (Brush)FindResource("AccentBrush");
-        }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or InvalidOperationException)
-        {
-            NexusApiKeyStatusText.Text = "Nexus API key test failed.";
-            NexusApiKeyStatusText.Foreground = (Brush)FindResource("DangerBrush");
-            MessageBox.Show(this, exception.Message, "Nexus API key test failed", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-    }
-
-    private void ClearNexusApiKey_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            _secureSecretStore.ClearNexusApiKey(_managerPaths);
-            NexusApiKeyPasswordBox.Password = string.Empty;
-            RefreshSettingsStatus();
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            MessageBox.Show(this, exception.Message, "Clear failed", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-    }
-
     private void SaveNexusGameDomain()
     {
+        if (_isLoadingSettings)
+        {
+            return;
+        }
+
         var domain = NexusGameDomainTextBox.Text.Trim();
         if (ShouldResetNexusGameDomain(domain))
         {
             domain = ManagerSettings.Empty.NexusGameDomain;
         }
 
-        _settings = _settings with { NexusGameDomain = domain };
-        _settingsService.Save(_managerPaths, _settings);
+        if (domain.Equals(_settings.NexusGameDomain, StringComparison.OrdinalIgnoreCase))
+        {
+            NexusGameDomainTextBox.Text = _settings.NexusGameDomain;
+            return;
+        }
+
+        try
+        {
+            _settings = _settings with { NexusGameDomain = domain };
+            _settingsService.Save(_managerPaths, _settings);
+            RefreshSettingsStatus();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, exception.Message, "Save settings failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            RefreshSettingsStatus();
+        }
+    }
+
+    private void NexusGameDomainTextBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        SaveNexusGameDomain();
     }
 
     private void ProfilesListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -4540,10 +3942,10 @@ public partial class MainWindow : Window
         }
 
         ModsListView.Items.Refresh();
-        return await ConfirmNexusUpdateResultsWithFilesAsync(checkableEntries, results, manifestsByModId);
+        return ConfirmNexusUpdateResultsWithFiles(checkableEntries, results, manifestsByModId);
     }
 
-    private async Task<IReadOnlyList<NexusUpdateCheckResult>> ConfirmNexusUpdateResultsWithFilesAsync(
+    private IReadOnlyList<NexusUpdateCheckResult> ConfirmNexusUpdateResultsWithFiles(
         IReadOnlyList<ModLibraryEntry> entries,
         IReadOnlyList<NexusUpdateCheckResult> results,
         IReadOnlyDictionary<string, ModManifest> manifestsByModId)
@@ -4564,10 +3966,8 @@ public partial class MainWindow : Window
             return results;
         }
 
-        var apiKey = GetConfiguredNexusApiKey();
         var confirmedResults = results.ToArray();
         var cached = 0;
-        var refreshed = 0;
         var failed = 0;
         var corrected = 0;
         foreach (var result in candidates)
@@ -4601,24 +4001,6 @@ public partial class MainWindow : Window
                 if (filesResult is not null)
                 {
                     cached++;
-                }
-                else if (!string.IsNullOrWhiteSpace(apiKey))
-                {
-                    filesResult = await _nexusModFilesService.LoadOrRefreshAsync(
-                        _managerPaths,
-                        result.GameDomain!,
-                        result.NexusModId!.Value,
-                        fingerprint,
-                        apiKey,
-                        forceRefresh: false);
-                    if (filesResult.IsFromCache)
-                    {
-                        cached++;
-                    }
-                    else
-                    {
-                        refreshed++;
-                    }
                 }
                 else
                 {
@@ -4695,7 +4077,7 @@ public partial class MainWindow : Window
             }
         }
 
-        _lastNexusFilesCacheSummary = $"Nexus files: {corrected} corrected, {cached} reused from cache, {refreshed} refreshed, {failed} skipped or failed.";
+        _lastNexusFilesCacheSummary = $"Nexus files: {corrected} corrected, {cached} reused from cache, {failed} skipped. API refresh disabled.";
         ShowSelectedMod(ModsListView.SelectedItem as ModRow);
         ModsListView.Items.Refresh();
         return confirmedResults;
@@ -4804,135 +4186,40 @@ public partial class MainWindow : Window
             mod.LatestNexusFileName);
     }
 
-    private static IReadOnlyList<NexusModUpdatePlan> BuildNexusUpdatePlans(
-        IReadOnlyList<ModLibraryEntry> entries,
-        IReadOnlyList<NexusUpdateCheckResult> results)
-    {
-        var entriesById = entries.ToDictionary(entry => entry.Mod.Id, StringComparer.OrdinalIgnoreCase);
-        return results
-            .Where(result => result.IsUpdateAvailable)
-            .Where(CanDownloadUpdate)
-            .Where(result => entriesById.ContainsKey(result.ModId))
-            .Select(result => new NexusModUpdatePlan(entriesById[result.ModId], result))
-            .ToArray();
-    }
-
-    private void ShowNoDownloadableUpdates(
-        IReadOnlyList<NexusUpdateCheckResult> results,
-        IReadOnlyList<NexusUpdateCheckResult> skippedUpdates)
-    {
-        var errors = results.Where(result => !string.IsNullOrWhiteSpace(result.ErrorMessage)).ToArray();
-        var lines = new List<string>
-        {
-            "No downloadable updates were found.",
-            $"Updates requiring manual review: {skippedUpdates.Count}",
-            $"Metadata errors: {errors.Length}",
-            "If Nexus refuses automatic download links, the account may need Nexus Premium."
-        };
-
-        var detailLines = skippedUpdates
-            .Select(result => $"{GetModName(result.ModId)}: update found, but Nexus did not provide a downloadable file id")
-            .Concat(errors.Select(result => $"{GetModName(result.ModId)}: {result.ErrorMessage}"))
-            .Take(10)
-            .ToArray();
-        if (detailLines.Length > 0)
-        {
-            lines.Add(string.Empty);
-            lines.AddRange(detailLines);
-        }
-
-        MessageBox.Show(
-            this,
-            string.Join("\n", lines),
-            "Update Mods",
-            MessageBoxButton.OK,
-            errors.Length == 0 && skippedUpdates.Count == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
-    }
-
-    private string BuildUpdateModsPrompt(
-        IReadOnlyList<NexusModUpdatePlan> updatePlans,
-        IReadOnlyList<NexusUpdateCheckResult> skippedUpdates)
+    private string BuildManualUpdatePrompt(IReadOnlyList<NexusUpdateCheckResult> updates)
     {
         var lines = new List<string>
         {
-            $"Download and install {updatePlans.Count} Nexus update(s)?",
+            $"Open Nexus file pages for {updates.Count} update(s)?",
             string.Empty
         };
 
-        lines.AddRange(updatePlans
-            .Select(plan => $"{plan.Entry.Mod.Name}: {plan.Result.LatestVersion ?? plan.Result.LatestFileName ?? plan.Result.LatestFileId?.ToString() ?? "latest"}")
+        lines.AddRange(updates
+            .Select(result => $"{GetModName(result.ModId)}: {result.LatestVersion ?? result.LatestFileName ?? result.LatestFileId?.ToString() ?? "latest"}")
             .Take(10));
-        if (updatePlans.Count > 10)
+        if (updates.Count > 10)
         {
-            lines.Add($"... {updatePlans.Count - 10} more");
-        }
-
-        if (skippedUpdates.Count > 0)
-        {
-            lines.Add(string.Empty);
-            lines.Add($"Manual review needed: {skippedUpdates.Count}");
+            lines.Add($"... {updates.Count - 10} more");
         }
 
         lines.Add(string.Empty);
-        lines.Add("Archives will be saved in the manager downloads folder before installation.");
-        lines.Add("If automatic download fails, Nexus may require Premium for API downloads; the manager can open the mod files page for manual download.");
+        lines.Add("The metadata catalog provides Nexus pages and file ids. Download the archives manually, then use Install Mods.");
         return string.Join("\n", lines);
     }
 
-    private static string BuildNexusUpdateArchiveFileName(NexusModUpdatePlan updatePlan)
+    private void OpenManualUpdatePages(IReadOnlyList<NexusUpdateCheckResult> updates)
     {
-        var modName = string.IsNullOrWhiteSpace(updatePlan.Entry.Mod.Name)
-            ? updatePlan.Entry.Mod.Id
-            : updatePlan.Entry.Mod.Name;
-        var nexusModId = updatePlan.Result.NexusModId?.ToString() ?? "mod";
-        var fileId = updatePlan.Result.LatestFileId?.ToString() ?? "file";
-        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        return $"{modName}-{nexusModId}-{fileId}-{timestamp}.zip";
-    }
-
-    private void OfferManualFallbackForUpdates(IEnumerable<NexusUpdateCheckResult> updateResults)
-    {
-        var manualResults = updateResults
-            .Where(result => result.NexusModId is not null)
-            .Where(result => !string.IsNullOrWhiteSpace(result.GameDomain))
-            .GroupBy(result => $"{result.GameDomain}:{result.NexusModId}", StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
-            .ToArray();
-        if (manualResults.Length == 0)
-        {
-            return;
-        }
-
-        var lines = new List<string>
-        {
-            "Some updates need manual download from Nexus.",
-            "This often means Nexus did not provide an automatic download link. A common reason is that the account may need Nexus Premium for API downloads.",
-            string.Empty,
-            "Open the Nexus files page now? After downloading the archive manually, use Install Mods."
-        };
-
-        var answer = MessageBox.Show(
-            this,
-            string.Join("\n", lines),
-            "Manual Nexus Download",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Information);
-        if (answer != MessageBoxResult.Yes)
-        {
-            return;
-        }
-
-        foreach (var result in manualResults.Take(8))
+        foreach (var result in updates.Take(8))
         {
             OpenNexusFilesPage(result.GameDomain!, result.NexusModId!.Value);
         }
 
-        if (manualResults.Length > 8)
+        if (updates.Count > 8)
         {
             MessageBox.Show(
                 this,
-                $"Opened 8 Nexus pages. {manualResults.Length - 8} more update pages were skipped to avoid opening too many browser tabs.",
-                "Manual Nexus Download",
+                $"Opened 8 Nexus pages. {updates.Count - 8} more update pages were skipped to avoid opening too many browser tabs.",
+                "Update Mods",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }
@@ -5369,6 +4656,11 @@ public partial class MainWindow : Window
             return null;
         }
 
+        if (!CanCompareSemanticVersionParts(firstParts, secondParts))
+        {
+            return null;
+        }
+
         var maxLength = Math.Max(firstParts.Length, secondParts.Length);
         for (var index = 0; index < maxLength; index++)
         {
@@ -5381,6 +4673,20 @@ public partial class MainWindow : Window
         }
 
         return 0;
+    }
+
+    private static bool CanCompareSemanticVersionParts(IReadOnlyList<int> firstParts, IReadOnlyList<int> secondParts)
+    {
+        var firstIsCounter = firstParts.Count == 1;
+        var secondIsCounter = secondParts.Count == 1;
+        if (firstIsCounter == secondIsCounter)
+        {
+            return true;
+        }
+
+        var single = firstIsCounter ? firstParts[0] : secondParts[0];
+        var semantic = firstIsCounter ? secondParts : firstParts;
+        return semantic[0] == single && semantic.Skip(1).All(part => part == 0);
     }
 
     private static int[] ParseSemanticVersionParts(string version)
@@ -5605,7 +4911,7 @@ public partial class MainWindow : Window
         {
             return result.Status.Contains("Metadata", StringComparison.OrdinalIgnoreCase)
                 ? result.Status
-                : "API error";
+                : "Metadata error";
         }
 
         if (result.IsUpdateAvailable)
@@ -6181,9 +5487,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        RefreshNexusFilesButton.IsEnabled = true;
         OpenSelectedModFilesPageButton.IsEnabled = true;
-        DownloadSelectedNexusFileButton.IsEnabled = false;
 
         var fingerprint = BuildNexusFilesFingerprint(selectedMod);
         var cached = _nexusModFilesService.TryLoadCached(
@@ -6194,7 +5498,7 @@ public partial class MainWindow : Window
         if (cached is null)
         {
             NexusFilesListView.ItemsSource = Array.Empty<NexusFileRow>();
-            SelectedNexusFilesStatusText.Text = "No cached file list yet. Run Check Updates or Refresh Files.";
+            SelectedNexusFilesStatusText.Text = "No cached file list yet. Run Check Updates or open the Nexus files page.";
             return;
         }
 
@@ -6208,125 +5512,13 @@ public partial class MainWindow : Window
             .ToArray();
         var source = result.IsFromCache ? "Cached" : "Refreshed";
         SelectedNexusFilesStatusText.Text = $"{source}: {result.Files.Count} files, {result.CachedAt.LocalDateTime:g}.";
-        DownloadSelectedNexusFileButton.IsEnabled = false;
     }
 
     private void ResetSelectedNexusFiles(string statusText)
     {
         NexusFilesListView.ItemsSource = Array.Empty<NexusFileRow>();
         SelectedNexusFilesStatusText.Text = statusText;
-        RefreshNexusFilesButton.IsEnabled = false;
-        DownloadSelectedNexusFileButton.IsEnabled = false;
         OpenSelectedModFilesPageButton.IsEnabled = false;
-    }
-
-    private void NexusFilesListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        DownloadSelectedNexusFileButton.IsEnabled = NexusFilesListView.SelectedItem is NexusFileRow
-            && ModsListView.SelectedItem is ModRow selectedMod
-            && CanUseNexusFiles(selectedMod);
-    }
-
-    private async void RefreshNexusFiles_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TryGetSelectedNexusMod(out var selectedMod))
-        {
-            return;
-        }
-
-        var apiKey = GetConfiguredNexusApiKey();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            ShowNexusFilesApiKeyRequired(selectedMod);
-            return;
-        }
-
-        RefreshNexusFilesButton.IsEnabled = false;
-        SelectedNexusFilesStatusText.Text = "Refreshing Nexus file list...";
-        try
-        {
-            var result = await _nexusModFilesService.LoadOrRefreshAsync(
-                _managerPaths,
-                selectedMod.GameDomain,
-                selectedMod.NexusModId!.Value,
-                BuildNexusFilesFingerprint(selectedMod),
-                apiKey,
-                forceRefresh: true);
-            ShowNexusFilesResult(result);
-        }
-        catch (Exception exception) when (exception is HttpRequestException
-            or TaskCanceledException
-            or JsonException
-            or IOException
-            or InvalidOperationException
-            or UnauthorizedAccessException)
-        {
-            SelectedNexusFilesStatusText.Text = "Nexus file refresh failed.";
-            OfferManualFallbackForSelectedFiles(selectedMod, exception.Message);
-        }
-        finally
-        {
-            RefreshNexusFilesButton.IsEnabled = CanUseNexusFiles(selectedMod);
-        }
-    }
-
-    private async void DownloadSelectedNexusFile_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TryGetSelectedNexusMod(out var selectedMod)
-            || NexusFilesListView.SelectedItem is not NexusFileRow selectedFile)
-        {
-            MessageBox.Show(this, "Select a Nexus file first.", "No file selected", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var apiKey = GetConfiguredNexusApiKey();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            ShowNexusFilesApiKeyRequired(selectedMod);
-            return;
-        }
-
-        var answer = MessageBox.Show(
-            this,
-            $"Download and install this Nexus file?\n\n{selectedMod.Name}\n{selectedFile.FileName}\nVersion: {selectedFile.Version}",
-            "Download Nexus File",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning);
-        if (answer != MessageBoxResult.Yes)
-        {
-            return;
-        }
-
-        var downloadRootPath = Path.Combine(_managerPaths.DownloadsPath, "nexus-files");
-        DownloadSelectedNexusFileButton.IsEnabled = false;
-        SelectedNexusFilesStatusText.Text = "Downloading selected Nexus file...";
-        try
-        {
-            var source = BuildSelectedNexusFileSource(selectedMod, selectedFile);
-            var download = await _nexusModDownloadService.DownloadUpdateArchiveAsync(
-                source,
-                selectedFile.FileId,
-                apiKey,
-                downloadRootPath,
-                BuildNexusFileArchiveName(selectedMod, selectedFile));
-            SelectedNexusFilesStatusText.Text = "Download complete. Installing archive...";
-            InstallModArchives(new[] { download.ArchivePath });
-        }
-        catch (Exception exception) when (exception is HttpRequestException
-            or TaskCanceledException
-            or JsonException
-            or IOException
-            or InvalidOperationException
-            or UnauthorizedAccessException)
-        {
-            SelectedNexusFilesStatusText.Text = "Nexus download failed.";
-            OfferManualFallbackForSelectedFiles(selectedMod, exception.Message);
-        }
-        finally
-        {
-            DownloadSelectedNexusFileButton.IsEnabled = NexusFilesListView.SelectedItem is NexusFileRow
-                && CanUseNexusFiles(selectedMod);
-        }
     }
 
     private void OpenSelectedModFilesPage_Click(object sender, RoutedEventArgs e)
@@ -6360,64 +5552,6 @@ public partial class MainWindow : Window
     {
         return selectedMod.NexusModId is not null
             && !string.IsNullOrWhiteSpace(selectedMod.GameDomain);
-    }
-
-    private void ShowNexusFilesApiKeyRequired(ModRow selectedMod)
-    {
-        var answer = MessageBox.Show(
-            this,
-            "Nexus API key is required to load or download file variants.\n\nIf Nexus refuses automatic downloads, the account may need Nexus Premium.\n\nOpen the Nexus files page manually?",
-            "Nexus API key required",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Information);
-        if (answer == MessageBoxResult.Yes)
-        {
-            OpenNexusFilesPage(selectedMod.GameDomain, selectedMod.NexusModId!.Value);
-        }
-    }
-
-    private void OfferManualFallbackForSelectedFiles(ModRow selectedMod, string errorMessage)
-    {
-        var answer = MessageBox.Show(
-            this,
-            $"Nexus request failed:\n\n{errorMessage}\n\nAutomatic downloads may require Nexus Premium for this account.\n\nOpen the Nexus files page manually?",
-            "Manual Nexus Download",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning);
-        if (answer == MessageBoxResult.Yes)
-        {
-            OpenNexusFilesPage(selectedMod.GameDomain, selectedMod.NexusModId!.Value);
-        }
-    }
-
-    private ModSourceInfo BuildSelectedNexusFileSource(ModRow selectedMod, NexusFileRow selectedFile)
-    {
-        var entry = _libraryEntries.FirstOrDefault(libraryEntry => libraryEntry.Mod.Id.Equals(selectedMod.Id, StringComparison.OrdinalIgnoreCase));
-        var source = entry?.Manifest.Source;
-        var fallbackSource = new ModSourceInfo(
-            "NexusMods",
-            selectedMod.GameDomain,
-            selectedMod.NexusModId,
-            selectedFile.FileId,
-            selectedFile.Version,
-            selectedFile.UploadedAt,
-            selectedFile.FileName);
-
-        return (source ?? fallbackSource) with
-        {
-            GameDomain = selectedMod.GameDomain,
-            ModId = selectedMod.NexusModId,
-            FileId = selectedFile.FileId,
-            FileVersion = selectedFile.Version,
-            FileTimestamp = selectedFile.UploadedAt,
-            SourceArchiveFileName = selectedFile.FileName
-        };
-    }
-
-    private static string BuildNexusFileArchiveName(ModRow selectedMod, NexusFileRow selectedFile)
-    {
-        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        return $"{selectedMod.Name}-{selectedMod.NexusModId}-{selectedFile.FileId}-{timestamp}.zip";
     }
 
     private void OpenSelectedModNexus_Click(object sender, RoutedEventArgs e)
@@ -6608,20 +5742,13 @@ public partial class MainWindow : Window
             RedirectVirtualWritesCheckBox.IsChecked = _currentProfile?.Virtualization.RedirectWritesToProfileState ?? true;
             ApplyModTableColumnSettings();
             NexusGameDomainTextBox.Text = _settings.NexusGameDomain;
-            var hasKey = _secureSecretStore.HasNexusApiKey(_managerPaths);
-            NexusApiKeyStatusText.Text = hasKey
-                ? $"Nexus API key is saved. Domain: {_settings.NexusGameDomain}."
-                : $"No Nexus API key saved. Domain: {_settings.NexusGameDomain}.";
-            NexusApiKeyStatusText.Foreground = (Brush)FindResource(hasKey
-                ? "AccentBrush"
-                : "MutedTextBrush");
             RefreshNexusMetadataStatusText();
             RefreshVirtualLaunchStatus();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            NexusApiKeyStatusText.Text = exception.Message;
-            NexusApiKeyStatusText.Foreground = (Brush)FindResource("DangerBrush");
+            NexusMetadataStatusText.Text = exception.Message;
+            NexusMetadataStatusText.Foreground = (Brush)FindResource("DangerBrush");
         }
         finally
         {
@@ -6632,6 +5759,9 @@ public partial class MainWindow : Window
     private void ApplyModTableColumnSettings()
     {
         var advancedWidth = _settings.ShowAdvancedModColumns;
+        AdvancedNexusDomainPanel.Visibility = advancedWidth
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         ModFilesColumn.Width = advancedWidth ? ModFilesColumnWidth : HiddenModColumnWidth;
         ModPluginsColumn.Width = advancedWidth ? ModPluginsColumnWidth : HiddenModColumnWidth;
         ModContentColumn.Width = advancedWidth ? ModContentColumnWidth : HiddenModColumnWidth;
@@ -6878,46 +6008,6 @@ public partial class MainWindow : Window
             MessageBox.Show(this, exception.Message, "Save profile settings failed", MessageBoxButton.OK, MessageBoxImage.Warning);
             RefreshSettingsStatus();
         }
-    }
-
-    private string? GetConfiguredNexusApiKey()
-    {
-        try
-        {
-            return _secureSecretStore.LoadNexusApiKey(_managerPaths)
-                ?? Environment.GetEnvironmentVariable("NEXUSMODS_API_KEY");
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
-        {
-            MessageBox.Show(this, exception.Message, "Nexus API key unavailable", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return null;
-        }
-    }
-
-    private static async Task<string?> TestNexusApiKey(string apiKey)
-    {
-        using var client = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(30)
-        };
-        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.nexusmods.com/v1/users/validate.json");
-        request.Headers.Add("apikey", apiKey);
-        request.Headers.UserAgent.Add(new ProductInfoHeaderValue("UCU-ModManager", "0.1"));
-        using var response = await client.SendAsync(request);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException($"Nexus returned {(int)response.StatusCode} {response.ReasonPhrase}.");
-        }
-
-        await using var stream = await response.Content.ReadAsStreamAsync();
-        using var document = await JsonDocument.ParseAsync(stream);
-        if (document.RootElement.TryGetProperty("name", out var nameElement)
-            && nameElement.ValueKind == JsonValueKind.String)
-        {
-            return nameElement.GetString();
-        }
-
-        return null;
     }
 
     private void RefreshSetupStatus()
@@ -7627,6 +6717,7 @@ public partial class MainWindow : Window
             return status.StartsWith("Update", StringComparison.OrdinalIgnoreCase)
                 || status.Equals("Update available", StringComparison.OrdinalIgnoreCase)
                 || status.Equals("Needs file check", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("Metadata error", StringComparison.OrdinalIgnoreCase)
                 || status.Equals("API error", StringComparison.OrdinalIgnoreCase)
                 || status.Equals("Downloading...", StringComparison.OrdinalIgnoreCase)
                 || status.Equals("Downloaded", StringComparison.OrdinalIgnoreCase)
@@ -7817,13 +6908,6 @@ public partial class MainWindow : Window
                 status);
         }
     }
-
-    private sealed record NexusDownloadTarget(
-        string GameDomain,
-        int ModId,
-        int FileId,
-        string? Version,
-        string? FileName);
 
     private sealed record UcuModpackInstallPlan(
         UcuModpackMod Mod,

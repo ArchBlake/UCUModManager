@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.0-alpha-public",
+    [string]$Version = "0.1.3-alpha-public",
     [string]$Configuration = "Release"
 )
 
@@ -52,7 +52,7 @@ Get-ChildItem -LiteralPath $publishDir -Recurse -File |
     Where-Object { $_.Extension -in ".pdb", ".xml" } |
     Remove-Item -Force
 
-Compress-Archive -Path (Join-Path $publishDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
+Compress-Archive -Path $publishDir -DestinationPath $zipPath -CompressionLevel Optimal
 
 $exePath = Join-Path $publishDir "UCU ModManager.exe"
 $exeSizeMb = [math]::Round((Get-Item -LiteralPath $exePath).Length / 1MB, 2)
