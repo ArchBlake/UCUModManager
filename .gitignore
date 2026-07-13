@@ -1,18 +1,55 @@
+# Build output
 bin/
 obj/
-.vs/
-.tmp/
-dev-data/
-samples/
-downloads/
-secrets/
 artifacts/
-/_*.png
+publish/
+
+# IDE and local workspace state
+.vs/
+.idea/
 *.user
 *.suo
-*.zip
-*.7z
+*.userosscache
+*.sln.docstates
+*.code-workspace
+
+# Test and coverage output
+TestResults/
+coverage/
+BenchmarkDotNet.Artifacts/
+*.trx
+*.coverage
+*.coveragexml
+coverage*.xml
+coverage*.json
+
+# Portable manager state and local test data
+.tmp/
+dev-data/
+/data/
+downloads/
+secrets/
+samples/
 docs/
 
-CUModManager.code-workspace
-UCUModManager.code-workspace
+# Logs, crash dumps, and temporary files
+*.log
+*.dmp
+*.mdmp
+*.tmp
+*.bak
+
+# Local environment and signing secrets
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.pem
+*.key
+*.snk
+
+# Local archives and temporary image-processing output
+*.zip
+*.7z
+/_*.png
