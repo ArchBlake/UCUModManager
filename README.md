@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://i.gyazo.com/6272d7aec36d9c4c9a3f4446dbeb54bd.png" width="128" alt="UCU ModManager">
+  <img src="https://i.gyazo.com/1ec4bb2be3a4f7e3dc6efd55d967009f.png">
 </p>
 
 <h1 align="center">UCU ModManager</h1>
