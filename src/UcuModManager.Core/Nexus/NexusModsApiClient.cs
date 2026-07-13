@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Text.Json;
 using UcuModManager.Core.Mods;
 
@@ -6,8 +7,8 @@ namespace UcuModManager.Core.Nexus;
 
 public sealed class NexusModsApiClient : IDisposable
 {
-    private const string ApplicationName = "UCU-ModManager";
-    private const string ApplicationVersion = "0.1";
+    private const string ApplicationName = "UCU Mod Manager";
+    private const string UserAgentProductName = "UCU-ModManager";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -16,11 +17,26 @@ public sealed class NexusModsApiClient : IDisposable
 
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
+    private readonly string _applicationVersion;
 
-    public NexusModsApiClient(HttpClient? httpClient = null)
+    public NexusModsApiClient(HttpClient? httpClient = null, string? applicationVersion = null)
     {
         _httpClient = httpClient ?? new HttpClient();
         _ownsHttpClient = httpClient is null;
+        _applicationVersion = ResolveApplicationVersion(applicationVersion);
+    }
+
+    public async Task<IReadOnlyList<NexusModFileInfo>> GetModFilesAsync(
+        string gameDomain,
+        int modId,
+        NexusOAuthTokenProvider tokenProvider,
+        NexusOAuthOptions oauthOptions,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tokenProvider);
+        ArgumentNullException.ThrowIfNull(oauthOptions);
+        var access = await tokenProvider.GetAccessContextAsync(oauthOptions, cancellationToken).ConfigureAwait(false);
+        return await GetModFilesAsync(gameDomain, modId, access.Tokens.AccessToken, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<NexusModFileInfo>> GetModFilesAsync(
@@ -45,12 +61,12 @@ public sealed class NexusModsApiClient : IDisposable
         AddHeaders(request, accessToken);
 
         using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"Nexus API request failed: {(int)response.StatusCode} {response.ReasonPhrase}. {body}");
+            throw new InvalidOperationException($"Nexus API request failed: {(int)response.StatusCode} {response.ReasonPhrase}.");
         }
 
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         using var document = JsonDocument.Parse(body);
         return ParseFiles(document.RootElement);
     }
@@ -281,12 +297,37 @@ public sealed class NexusModsApiClient : IDisposable
                 || category.Contains("archived", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static void AddHeaders(HttpRequestMessage request, string accessToken)
+    private void AddHeaders(HttpRequestMessage request, string accessToken)
     {
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Headers.Add("Application-Name", ApplicationName);
-        request.Headers.Add("Application-Version", ApplicationVersion);
-        request.Headers.UserAgent.Add(new ProductInfoHeaderValue(ApplicationName, ApplicationVersion));
+        request.Headers.Add("Application-Version", _applicationVersion);
+        request.Headers.UserAgent.Add(new ProductInfoHeaderValue(UserAgentProductName, _applicationVersion));
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+    }
+
+    private static string ResolveApplicationVersion(string? configuredVersion)
+    {
+        var version = configuredVersion;
+        if (string.IsNullOrWhiteSpace(version))
+        {
+            var entryAssembly = Assembly.GetEntryAssembly();
+            version = entryAssembly?
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+                .InformationalVersion;
+            version ??= entryAssembly?.GetName().Version?.ToString(3);
+            version ??= typeof(NexusModsApiClient).Assembly.GetName().Version?.ToString(3);
+        }
+
+        version = version?.Split('+', 2)[0].Trim();
+        if (string.IsNullOrWhiteSpace(version))
+        {
+            return "development";
+        }
+
+        var safeVersion = new string(version
+            .Where(character => char.IsLetterOrDigit(character) || character is '.' or '-' or '_')
+            .ToArray());
+        return string.IsNullOrWhiteSpace(safeVersion) ? "development" : safeVersion;
     }
 }

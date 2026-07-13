@@ -7,7 +7,7 @@ using UcuModManager.Core.Storage;
 
 namespace UcuModManager.App;
 
-internal sealed class NexusOAuthTokenStore
+internal sealed class NexusOAuthTokenStore : INexusOAuthTokenStore
 {
     private const int CryptProtectUiForbidden = 0x1;
 
@@ -16,14 +16,18 @@ internal sealed class NexusOAuthTokenStore
         WriteIndented = true
     };
 
-    public bool HasTokens(ManagerPaths managerPaths)
+    private readonly ManagerPaths _managerPaths;
+
+    public NexusOAuthTokenStore(ManagerPaths managerPaths)
     {
-        return File.Exists(GetTokenPath(managerPaths));
+        _managerPaths = managerPaths ?? throw new ArgumentNullException(nameof(managerPaths));
     }
 
-    public NexusOAuthTokenSet? LoadTokens(ManagerPaths managerPaths)
+    public bool HasTokens => File.Exists(GetTokenPath());
+
+    public NexusOAuthTokenSet? LoadTokens()
     {
-        var path = GetTokenPath(managerPaths);
+        var path = GetTokenPath();
         if (!File.Exists(path))
         {
             return null;
@@ -34,32 +38,46 @@ internal sealed class NexusOAuthTokenStore
         return JsonSerializer.Deserialize<NexusOAuthTokenSet>(json, JsonOptions);
     }
 
-    public void SaveTokens(ManagerPaths managerPaths, NexusOAuthTokenSet tokens)
+    public void SaveTokens(NexusOAuthTokenSet tokens)
     {
-        var path = GetTokenPath(managerPaths);
+        ArgumentNullException.ThrowIfNull(tokens);
+        var path = GetTokenPath();
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var json = JsonSerializer.Serialize(tokens, JsonOptions);
-        File.WriteAllBytes(path, Protect(Encoding.UTF8.GetBytes(json)));
+        var protectedBytes = Protect(Encoding.UTF8.GetBytes(json));
+        var temporaryPath = path + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllBytes(temporaryPath, protectedBytes);
+            File.Move(temporaryPath, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
     }
 
-    public void ClearTokens(ManagerPaths managerPaths)
+    public void ClearTokens()
     {
-        var path = GetTokenPath(managerPaths);
+        var path = GetTokenPath();
         if (File.Exists(path))
         {
             File.Delete(path);
         }
     }
 
-    private static string GetTokenPath(ManagerPaths managerPaths)
+    private string GetTokenPath()
     {
-        return Path.Combine(managerPaths.RootPath, "secrets", "nexus-oauth-tokens.dpapi");
+        return Path.Combine(_managerPaths.RootPath, "secrets", "nexus-oauth-tokens.dpapi");
     }
 
     private static byte[] Protect(byte[] bytes)
     {
         using var input = DataBlob.FromBytes(bytes);
-        if (!CryptProtectData(input.Pointer, "UCU ModManager Nexus OAuth Tokens", IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, CryptProtectUiForbidden, out var output))
+        if (!CryptProtectData(input.Pointer, "UCU Mod Manager Nexus OAuth Tokens", IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, CryptProtectUiForbidden, out var output))
         {
             throw new InvalidOperationException("Windows could not encrypt the Nexus OAuth tokens.");
         }

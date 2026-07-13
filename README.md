@@ -1,15 +1,15 @@
 <p align="center">
-  <img src="https://i.gyazo.com/6272d7aec36d9c4c9a3f4446dbeb54bd.png" width="128" alt="UCU ModManager">
+  <img src="https://i.gyazo.com/1ec4bb2be3a4f7e3dc6efd55d967009f.png" width="360" alt="UCU Mod Manager logo">
 </p>
 
-<h1 align="center">UCU ModManager</h1>
+<h1 align="center">UCU Mod Manager</h1>
 
 <p align="center">
   Universal Mod Manager for <strong>Casualties Unknown</strong>.
 </p>
 
 > [!WARNING]
-> UCU ModManager is currently in early alpha. Please report bugs, launch errors,
+> UCU Mod Manager is currently in early alpha. Please report bugs, launch errors,
 > Mod installation issues, virtualization problems, or any odd behavior in the manager.
 
 [**Download Latest Pre-Release**](https://github.com/ArchBlake/UCUModManager/releases/download/v0.1.4-AV-NOAPI-P/UCU-ModManager-0.1.4-alpha-public-no-API-portable.zip)
@@ -20,7 +20,7 @@ Metadata from [**Jimmyking**](https://github.com/jimmyking9999999) - [**GitHub**
 
 ## About
 
-UCU ModManager is a tool for conveniently managing Casualties Unknown mods. It lets you install and remove mods, create separate profiles, configure load order, build and install modpacks, check for updates, and launch the game with a selected mod setup.
+UCU Mod Manager is a tool for conveniently managing Casualties Unknown mods. It lets you install and remove mods, create separate profiles, configure load order, build and install modpacks, check for updates, and launch the game with a selected mod setup.
 
 The main goal of the project is to simplify working with mods so you do not have to manually rebuild the game every time you want to update mods, switch builds, or prepare a new modpack.
 
@@ -32,7 +32,7 @@ For now, virtualization should be treated as an alpha feature. It is recommended
 
 ## Important
 
-Use a clean game installation whenever possible. BepInEx must be installed into the game folder first, preferably through UCU ModManager itself.
+Use a clean game installation whenever possible. BepInEx must be installed into the game folder first, preferably through UCU Mod Manager itself.
 
 The manager treats a clean game with BepInEx installed as the expected base state. Mods, profiles, modpacks, and manager data are stored inside the manager folder.
 
@@ -50,7 +50,7 @@ The manager treats a clean game with BepInEx installed as the expected base stat
 
 1. Download the latest release archive.
 2. Extract it into an empty folder.
-3. Run `UCU ModManager.exe`.
+3. Run `UCU Mod Manager.exe`.
 
 ## Requirements
 

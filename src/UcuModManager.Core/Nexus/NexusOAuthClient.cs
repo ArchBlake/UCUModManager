@@ -34,15 +34,12 @@ public sealed class NexusOAuthClient : IDisposable
         {
             new("response_type", "code"),
             new("client_id", options.ClientId.Trim()),
+            new("scope", options.Scope?.Trim() ?? string.Empty),
             new("redirect_uri", options.RedirectUri.ToString()),
             new("code_challenge", pkce.CodeChallenge),
             new("code_challenge_method", pkce.CodeChallengeMethod),
             new("state", state)
         };
-        if (!string.IsNullOrWhiteSpace(options.Scope))
-        {
-            query.Add(new KeyValuePair<string, string>("scope", options.Scope.Trim()));
-        }
 
         var builder = new UriBuilder(options.EffectiveAuthorizationEndpoint)
         {
@@ -58,6 +55,7 @@ public sealed class NexusOAuthClient : IDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        EnsureConfigured(options);
         if (string.IsNullOrWhiteSpace(authorizationCode))
         {
             throw new ArgumentException("Authorization code is required.", nameof(authorizationCode));
@@ -77,7 +75,12 @@ public sealed class NexusOAuthClient : IDisposable
             ["code_verifier"] = codeVerifier.Trim(),
             ["scope"] = options.Scope?.Trim() ?? string.Empty
         };
-        return await SendTokenRequestAsync(options.EffectiveTokenEndpoint, form, fallbackRefreshToken: null, cancellationToken)
+        return await SendTokenRequestAsync(
+                options.EffectiveTokenEndpoint,
+                form,
+                fallbackRefreshToken: null,
+                options.Scope,
+                cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -87,6 +90,7 @@ public sealed class NexusOAuthClient : IDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        EnsureConfigured(options);
         if (string.IsNullOrWhiteSpace(refreshToken))
         {
             throw new ArgumentException("Refresh token is required.", nameof(refreshToken));
@@ -98,7 +102,12 @@ public sealed class NexusOAuthClient : IDisposable
             ["client_id"] = options.ClientId.Trim(),
             ["refresh_token"] = refreshToken.Trim()
         };
-        return await SendTokenRequestAsync(options.EffectiveTokenEndpoint, form, refreshToken.Trim(), cancellationToken)
+        return await SendTokenRequestAsync(
+                options.EffectiveTokenEndpoint,
+                form,
+                refreshToken.Trim(),
+                options.Scope,
+                cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -114,6 +123,7 @@ public sealed class NexusOAuthClient : IDisposable
         Uri tokenEndpoint,
         IReadOnlyDictionary<string, string> form,
         string? fallbackRefreshToken,
+        string? fallbackScope,
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, tokenEndpoint)
@@ -126,7 +136,11 @@ public sealed class NexusOAuthClient : IDisposable
         var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"Nexus OAuth token request failed: {(int)response.StatusCode} {response.ReasonPhrase}. {body}");
+            var oauthError = ParseOAuthError(body);
+            throw new NexusOAuthException(
+                BuildSafeErrorMessage(response, oauthError),
+                (int)response.StatusCode,
+                oauthError?.Error);
         }
 
         var token = JsonSerializer.Deserialize<NexusOAuthTokenResponse>(body, JsonOptions)
@@ -150,9 +164,58 @@ public sealed class NexusOAuthClient : IDisposable
             token.AccessToken,
             refreshToken,
             string.IsNullOrWhiteSpace(token.TokenType) ? "Bearer" : token.TokenType,
-            token.Scope,
+            string.IsNullOrWhiteSpace(token.Scope) ? fallbackScope : token.Scope,
             issuedAt.AddSeconds(expiresIn),
             issuedAt);
+    }
+
+    private static void EnsureConfigured(NexusOAuthOptions options)
+    {
+        if (!options.IsConfigured)
+        {
+            throw new InvalidOperationException("Nexus OAuth is not configured. Register the app and set the OAuth client id first.");
+        }
+    }
+
+    private static NexusOAuthErrorResponse? ParseOAuthError(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<NexusOAuthErrorResponse>(body, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string BuildSafeErrorMessage(HttpResponseMessage response, NexusOAuthErrorResponse? oauthError)
+    {
+        var message = $"Nexus OAuth token request failed: {(int)response.StatusCode} {response.ReasonPhrase}.";
+        if (!string.IsNullOrWhiteSpace(oauthError?.Error))
+        {
+            message += $" OAuth error: {oauthError.Error}.";
+        }
+
+        if (!string.IsNullOrWhiteSpace(oauthError?.ErrorDescription))
+        {
+            message += $" {Truncate(oauthError.ErrorDescription, 300)}";
+        }
+
+        return message;
+    }
+
+    private static string Truncate(string value, int maximumLength)
+    {
+        var normalized = value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return normalized.Length <= maximumLength
+            ? normalized
+            : normalized[..maximumLength] + "...";
     }
 
     private static string BuildQuery(IEnumerable<KeyValuePair<string, string>> values)
@@ -178,5 +241,14 @@ public sealed class NexusOAuthClient : IDisposable
 
         [JsonPropertyName("expires_in")]
         public int ExpiresIn { get; init; }
+    }
+
+    private sealed class NexusOAuthErrorResponse
+    {
+        [JsonPropertyName("error")]
+        public string? Error { get; init; }
+
+        [JsonPropertyName("error_description")]
+        public string? ErrorDescription { get; init; }
     }
 }

@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         mc:Ignorable="d"
-        Title="UCU ModManager"
+        Title="UCU Mod Manager"
         Icon="Assets/UCU.png"
         Height="840"
         Width="1440"
@@ -884,7 +884,7 @@
                             Background="{StaticResource AccentBrush}"
                             CornerRadius="2"
                             Margin="0,0,10,0" />
-                    <TextBlock Text="UCU ModManager" FontWeight="SemiBold" FontSize="14" />
+                    <TextBlock Text="UCU Mod Manager" FontWeight="SemiBold" FontSize="14" />
                     <TextBlock Text="Development Build · Alpha Public"
                                Foreground="{StaticResource MutedTextBrush}"
                                FontSize="12"
@@ -1985,7 +1985,7 @@
                               Checked="AutoLinkNexusOnStartupCheckBox_Changed"
                               Unchecked="AutoLinkNexusOnStartupCheckBox_Changed" />
                     <TextBlock Grid.Row="4"
-                               Text="When enabled, UCU ModManager links installed mods to Nexus metadata after startup without asking."
+                               Text="When enabled, UCU Mod Manager links installed mods to Nexus metadata after startup without asking."
                                Style="{StaticResource MutedText}"
                                Margin="23,4,0,0" />
                     <TextBlock Grid.Row="5"

@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $artifactsRoot = Join-Path $repoRoot "artifacts"
-$publishDir = Join-Path $artifactsRoot "portable\UCU ModManager"
+$publishDir = Join-Path $artifactsRoot "portable\UCU Mod Manager"
 $zipPath = Join-Path $artifactsRoot "UCU-ModManager-$Version-portable.zip"
 $projectPath = Join-Path $repoRoot "src\UcuModManager.App\UcuModManager.App.csproj"
 
@@ -48,13 +48,18 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE."
 }
 
+Copy-Item `
+    -LiteralPath (Join-Path $repoRoot "THIRD-PARTY-NOTICES.txt") `
+    -Destination (Join-Path $publishDir "THIRD-PARTY-NOTICES.txt") `
+    -Force
+
 Get-ChildItem -LiteralPath $publishDir -Recurse -File |
     Where-Object { $_.Extension -in ".pdb", ".xml" } |
     Remove-Item -Force
 
 Compress-Archive -Path $publishDir -DestinationPath $zipPath -CompressionLevel Optimal
 
-$exePath = Join-Path $publishDir "UCU ModManager.exe"
+$exePath = Join-Path $publishDir "UCU Mod Manager.exe"
 $exeSizeMb = [math]::Round((Get-Item -LiteralPath $exePath).Length / 1MB, 2)
 $zipSizeMb = [math]::Round((Get-Item -LiteralPath $zipPath).Length / 1MB, 2)
 

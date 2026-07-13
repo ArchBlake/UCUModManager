@@ -1606,12 +1606,12 @@ public partial class MainWindow : Window
     {
         MessageBox.Show(
             this,
-            "UCU ModManager\n"
+            "UCU Mod Manager\n"
             + "Development Build · Alpha Public\n\n"
             + "Dev: Arch Blake\n"
             + "Nexus metadata repository: Jimmyking\n\n"
             + "Special thanks: Horus and VoidYuum",
-            "About UCU ModManager",
+            "About UCU Mod Manager",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
     }
@@ -2374,7 +2374,7 @@ public partial class MainWindow : Window
         var deployedFiles = deploymentManifest?.Files
             .Count(file => file.OwningModId.Equals(selectedMod.Id, StringComparison.OrdinalIgnoreCase)) ?? 0;
 
-        var message = $"Remove '{selectedMod.Name}' from UCU ModManager storage?";
+        var message = $"Remove '{selectedMod.Name}' from UCU Mod Manager storage?";
         if (deployedFiles > 0)
         {
             message += $"\n\nThis mod currently has {deployedFiles} managed deployed files in the game folder. Choose Yes to clean the active deployment first, No to remove manager storage only, or Cancel.";
