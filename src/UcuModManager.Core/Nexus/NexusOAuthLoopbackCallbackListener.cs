@@ -3,7 +3,7 @@ using System.Text;
 
 namespace UcuModManager.Core.Nexus;
 
-public sealed class NexusOAuthLoopbackCallbackListener : IDisposable
+public sealed class NexusOAuthLoopbackCallbackListener : INexusOAuthCallbackListener
 {
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(3);
 
@@ -40,6 +40,25 @@ public sealed class NexusOAuthLoopbackCallbackListener : IDisposable
         return WaitForCallbackAsync(expectedState, DefaultTimeout, cancellationToken);
     }
 
+    public void Start()
+    {
+        if (_listener.IsListening)
+        {
+            return;
+        }
+
+        try
+        {
+            _listener.Start();
+        }
+        catch (HttpListenerException exception)
+        {
+            throw new InvalidOperationException(
+                $"UCU Mod Manager could not open the Nexus callback at {_redirectUri}. The local port may already be in use.",
+                exception);
+        }
+    }
+
     public async Task<NexusOAuthCallbackResult> WaitForCallbackAsync(
         string expectedState,
         TimeSpan timeout,
@@ -55,16 +74,7 @@ public sealed class NexusOAuthLoopbackCallbackListener : IDisposable
             throw new ArgumentOutOfRangeException(nameof(timeout), "OAuth callback timeout must be positive.");
         }
 
-        try
-        {
-            _listener.Start();
-        }
-        catch (HttpListenerException exception)
-        {
-            throw new InvalidOperationException(
-                $"UCU Mod Manager could not open the Nexus callback at {_redirectUri}. The local port may already be in use.",
-                exception);
-        }
+        Start();
 
         using var timeoutSource = new CancellationTokenSource(timeout);
         using var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);

@@ -20,6 +20,7 @@ using UcuModManager.Core.BepInEx;
 using UcuModManager.Core.Deployment;
 using UcuModManager.Core.Games;
 using UcuModManager.Core.Mods;
+using UcuModManager.Core.Nexus;
 using UcuModManager.Core.Profiles;
 using UcuModManager.Core.Storage;
 using UcuModManager.Core.Virtualization;
@@ -63,6 +64,9 @@ public partial class MainWindow : Window
     private readonly NexusModFilesService _nexusModFilesService = new();
     private readonly NexusMetadataCatalogService _nexusMetadataCatalogService = new();
     private readonly NexusMetadataMatcher _nexusMetadataMatcher = new();
+    private readonly NexusOAuthClient _nexusOAuthClient = new();
+    private readonly NexusOAuthTokenProvider _nexusOAuthTokenProvider;
+    private readonly NexusOAuthAuthorizationCoordinator _nexusOAuthCoordinator;
     private readonly HttpClient _imageHttpClient = new();
     private readonly Dictionary<string, BitmapImage> _imageCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Queue<string> _imageCacheOrder = new();
@@ -85,6 +89,9 @@ public partial class MainWindow : Window
     private bool _isLoadingProfiles;
     private bool _isLoadingSettings;
     private bool _isAutoLinkNexusRunning;
+    private bool _isNexusOAuthBusy;
+    private NexusOAuthAccessContext? _nexusOAuthContext;
+    private string? _nexusOAuthStatusMessage;
     private int _selectedImageRequestId;
     private int _nexusBrowserImageRequestId;
     private string? _lastNexusFilesCacheSummary;
@@ -94,6 +101,13 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _managerPaths = ResolveManagerPaths();
+        _nexusOAuthTokenProvider = new NexusOAuthTokenProvider(
+            new NexusOAuthTokenStore(_managerPaths),
+            _nexusOAuthClient,
+            new NexusOAuthTokenValidator());
+        _nexusOAuthCoordinator = new NexusOAuthAuthorizationCoordinator(
+            _nexusOAuthClient,
+            _nexusOAuthTokenProvider);
         _settings = _settingsService.Load(_managerPaths);
         if (ShouldResetNexusGameDomain(_settings.NexusGameDomain))
         {
@@ -122,6 +136,7 @@ public partial class MainWindow : Window
     {
         Loaded -= MainWindow_Loaded;
         await ShowVirtualizationIntroIfNeededAsync();
+        await RefreshNexusAccountAsync();
         await RefreshNexusMetadataOnStartupAsync();
         if (_settings.AutoLinkNexusOnStartup)
         {
@@ -237,6 +252,7 @@ public partial class MainWindow : Window
         _imageCache.Clear();
         _imageCacheOrder.Clear();
         _imageHttpClient.Dispose();
+        _nexusOAuthClient.Dispose();
         _nexusModFilesService.Dispose();
         _nexusMetadataCatalogService.Dispose();
     }
@@ -5728,6 +5744,231 @@ public partial class MainWindow : Window
         return text.Trim();
     }
 
+    private async Task RefreshNexusAccountAsync()
+    {
+        var options = NexusOAuthAppConfiguration.CreateOptions();
+        if (!options.IsConfigured || !_nexusOAuthTokenProvider.HasStoredTokens)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = null;
+            RefreshNexusAccountStatus();
+            return;
+        }
+
+        _isNexusOAuthBusy = true;
+        _nexusOAuthStatusMessage = "Checking saved authorization...";
+        RefreshNexusAccountStatus();
+        try
+        {
+            _nexusOAuthContext = await _nexusOAuthTokenProvider.GetAccessContextAsync(options);
+            _nexusOAuthStatusMessage = null;
+        }
+        catch (NexusOAuthAuthenticationRequiredException exception)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = exception.Message;
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            or OperationCanceledException
+            or IOException
+            or JsonException
+            or InvalidOperationException
+            or UnauthorizedAccessException)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = "Saved authorization could not be checked. Use Connect Nexus to try again.";
+        }
+        finally
+        {
+            _isNexusOAuthBusy = false;
+            RefreshNexusAccountStatus();
+        }
+    }
+
+    private void RefreshNexusAccountStatus()
+    {
+        var options = NexusOAuthAppConfiguration.CreateOptions();
+        var hasStoredTokens = _nexusOAuthTokenProvider.HasStoredTokens;
+
+        if (_isNexusOAuthBusy)
+        {
+            NexusAccountNameText.Text = _nexusOAuthContext?.Identity.Username ?? "Connecting Nexus account";
+            NexusAccountStatusText.Text = _nexusOAuthStatusMessage ?? "Waiting for secure authorization...";
+            NexusAccountStatusText.Foreground = (Brush)FindResource("AccentBrush");
+            ConnectNexusAccountButton.IsEnabled = false;
+            DisconnectNexusAccountButton.IsEnabled = false;
+            return;
+        }
+
+        if (_nexusOAuthContext is not null)
+        {
+            NexusAccountNameText.Text = _nexusOAuthContext.Identity.Username;
+            NexusAccountStatusText.Text = $"{BuildNexusMembershipText(_nexusOAuthContext.Identity)} - Connected securely";
+            NexusAccountStatusText.Foreground = (Brush)FindResource("AccentBrush");
+            ConnectNexusAccountButton.IsEnabled = false;
+            DisconnectNexusAccountButton.IsEnabled = true;
+            return;
+        }
+
+        if (!options.IsConfigured)
+        {
+            NexusAccountNameText.Text = "OAuth registration pending";
+            NexusAccountStatusText.Text = "Nexus metadata remains available. Account features will activate after app approval.";
+            NexusAccountStatusText.Foreground = (Brush)FindResource("MutedTextBrush");
+            ConnectNexusAccountButton.IsEnabled = false;
+            DisconnectNexusAccountButton.IsEnabled = hasStoredTokens;
+            return;
+        }
+
+        NexusAccountNameText.Text = "Not connected";
+        NexusAccountStatusText.Text = _nexusOAuthStatusMessage
+            ?? (hasStoredTokens
+                ? "Saved authorization needs to be checked again."
+                : "Connect your Nexus account to enable account-based API features.");
+        NexusAccountStatusText.Foreground = (Brush)FindResource(
+            string.IsNullOrWhiteSpace(_nexusOAuthStatusMessage) ? "MutedTextBrush" : "WarningBrush");
+        ConnectNexusAccountButton.IsEnabled = true;
+        DisconnectNexusAccountButton.IsEnabled = hasStoredTokens;
+    }
+
+    private static string BuildNexusMembershipText(NexusOAuthIdentity identity)
+    {
+        if (identity.MembershipRoles.Any(role =>
+                role.Equals("lifetimepremium", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "Lifetime Premium";
+        }
+
+        if (!identity.HasPremiumMembership())
+        {
+            return "Free account";
+        }
+
+        return identity.PremiumExpiry is not null && identity.PremiumExpiry > DateTimeOffset.UtcNow
+            ? $"Premium until {identity.PremiumExpiry.Value.ToLocalTime():yyyy-MM-dd}"
+            : "Premium account";
+    }
+
+    private async void ConnectNexusAccount_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isNexusOAuthBusy)
+        {
+            return;
+        }
+
+        var options = NexusOAuthAppConfiguration.CreateOptions();
+        if (!options.IsConfigured)
+        {
+            RefreshNexusAccountStatus();
+            return;
+        }
+
+        VirtualLaunchProgressDialog? progressDialog = null;
+        try
+        {
+            _isNexusOAuthBusy = true;
+            _nexusOAuthStatusMessage = "Opening secure Nexus sign-in...";
+            RefreshNexusAccountStatus();
+            progressDialog = ShowProgress(
+                "Nexus Account",
+                "Connecting Nexus account",
+                "Preparing secure sign-in...");
+            var progress = new Progress<string>(status =>
+            {
+                _nexusOAuthStatusMessage = status;
+                UpdateProgress(progressDialog, status);
+                RefreshNexusAccountStatus();
+            });
+
+            _nexusOAuthContext = await _nexusOAuthCoordinator.ConnectAsync(
+                options,
+                OpenNexusAuthorizationUriAsync,
+                progress);
+            _nexusOAuthStatusMessage = null;
+        }
+        catch (NexusOAuthException exception)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = exception.Message;
+            if (!string.Equals(exception.ErrorCode, "access_denied", StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show(this, exception.Message, "Nexus sign-in failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = "Nexus sign-in was cancelled.";
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            or TimeoutException
+            or IOException
+            or InvalidOperationException
+            or System.ComponentModel.Win32Exception
+            or UnauthorizedAccessException)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = exception is TimeoutException
+                ? "Nexus sign-in timed out. Try connecting again."
+                : "Nexus sign-in could not be completed.";
+            MessageBox.Show(this, exception.Message, "Nexus sign-in failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _isNexusOAuthBusy = false;
+            CloseProgress(progressDialog);
+            RefreshNexusAccountStatus();
+        }
+    }
+
+    private void DisconnectNexusAccount_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isNexusOAuthBusy || (_nexusOAuthContext is null && !_nexusOAuthTokenProvider.HasStoredTokens))
+        {
+            return;
+        }
+
+        var answer = MessageBox.Show(
+            this,
+            "Disconnect the Nexus account from this device?\n\nThe locally stored authorization will be removed.",
+            "Disconnect Nexus account",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (answer != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _nexusOAuthTokenProvider.Disconnect();
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = null;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _nexusOAuthStatusMessage = "The saved Nexus authorization could not be removed.";
+            MessageBox.Show(this, exception.Message, "Disconnect Nexus account failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
+        RefreshNexusAccountStatus();
+    }
+
+    private static Task OpenNexusAuthorizationUriAsync(Uri uri, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var process = Process.Start(new ProcessStartInfo(uri.ToString())
+        {
+            UseShellExecute = true
+        });
+        if (process is null)
+        {
+            throw new InvalidOperationException("Windows could not open the Nexus sign-in page.");
+        }
+
+        return Task.CompletedTask;
+    }
+
     private void RefreshSettingsStatus()
     {
         _isLoadingSettings = true;
@@ -5742,6 +5983,7 @@ public partial class MainWindow : Window
             RedirectVirtualWritesCheckBox.IsChecked = _currentProfile?.Virtualization.RedirectWritesToProfileState ?? true;
             ApplyModTableColumnSettings();
             NexusGameDomainTextBox.Text = _settings.NexusGameDomain;
+            RefreshNexusAccountStatus();
             RefreshNexusMetadataStatusText();
             RefreshVirtualLaunchStatus();
         }
