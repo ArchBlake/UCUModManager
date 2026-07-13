@@ -65,6 +65,7 @@ public partial class MainWindow : Window
     private readonly NexusMetadataCatalogService _nexusMetadataCatalogService = new();
     private readonly NexusMetadataMatcher _nexusMetadataMatcher = new();
     private readonly NexusOAuthClient _nexusOAuthClient = new();
+    private readonly NexusModsApiClient _nexusModsApiClient = new();
     private readonly NexusOAuthTokenProvider _nexusOAuthTokenProvider;
     private readonly NexusOAuthAuthorizationCoordinator _nexusOAuthCoordinator;
     private readonly HttpClient _imageHttpClient = new();
@@ -253,6 +254,7 @@ public partial class MainWindow : Window
         _imageCacheOrder.Clear();
         _imageHttpClient.Dispose();
         _nexusOAuthClient.Dispose();
+        _nexusModsApiClient.Dispose();
         _nexusModFilesService.Dispose();
         _nexusMetadataCatalogService.Dispose();
     }
@@ -3958,10 +3960,10 @@ public partial class MainWindow : Window
         }
 
         ModsListView.Items.Refresh();
-        return ConfirmNexusUpdateResultsWithFiles(checkableEntries, results, manifestsByModId);
+        return await ConfirmNexusUpdateResultsWithFilesAsync(checkableEntries, results, manifestsByModId);
     }
 
-    private IReadOnlyList<NexusUpdateCheckResult> ConfirmNexusUpdateResultsWithFiles(
+    private async Task<IReadOnlyList<NexusUpdateCheckResult>> ConfirmNexusUpdateResultsWithFilesAsync(
         IReadOnlyList<ModLibraryEntry> entries,
         IReadOnlyList<NexusUpdateCheckResult> results,
         IReadOnlyDictionary<string, ModManifest> manifestsByModId)
@@ -3984,8 +3986,40 @@ public partial class MainWindow : Window
 
         var confirmedResults = results.ToArray();
         var cached = 0;
+        var refreshed = 0;
         var failed = 0;
+        var apiFailures = 0;
         var corrected = 0;
+        var oauthOptions = NexusOAuthAppConfiguration.CreateOptions();
+        var canRefreshFromApi = oauthOptions.IsConfigured && _nexusOAuthTokenProvider.HasStoredTokens;
+        if (canRefreshFromApi)
+        {
+            try
+            {
+                _nexusOAuthContext = await _nexusOAuthTokenProvider.GetAccessContextAsync(oauthOptions);
+                _nexusOAuthStatusMessage = null;
+                RefreshNexusAccountStatus();
+            }
+            catch (NexusOAuthAuthenticationRequiredException exception)
+            {
+                _nexusOAuthContext = null;
+                _nexusOAuthStatusMessage = exception.Message;
+                canRefreshFromApi = false;
+                apiFailures++;
+                RefreshNexusAccountStatus();
+            }
+            catch (Exception exception) when (exception is HttpRequestException
+                or OperationCanceledException
+                or JsonException
+                or IOException
+                or InvalidOperationException
+                or UnauthorizedAccessException)
+            {
+                canRefreshFromApi = false;
+                apiFailures++;
+            }
+        }
+
         foreach (var result in candidates)
         {
             if (!entriesById.TryGetValue(result.ModId, out var entry))
@@ -4018,7 +4052,52 @@ public partial class MainWindow : Window
                 {
                     cached++;
                 }
-                else
+
+                if (filesResult is null && canRefreshFromApi)
+                {
+                    try
+                    {
+                        filesResult = await _nexusModFilesService.LoadOrRefreshAsync(
+                            _managerPaths,
+                            result.GameDomain!,
+                            result.NexusModId!.Value,
+                            fingerprint,
+                            cancellationToken => _nexusModsApiClient.GetModFilesAsync(
+                                result.GameDomain!,
+                                result.NexusModId.Value,
+                                _nexusOAuthTokenProvider,
+                                oauthOptions,
+                                cancellationToken));
+                        refreshed++;
+                    }
+                    catch (NexusOAuthAuthenticationRequiredException exception)
+                    {
+                        _nexusOAuthContext = null;
+                        _nexusOAuthStatusMessage = exception.Message;
+                        canRefreshFromApi = false;
+                        apiFailures++;
+                        RefreshNexusAccountStatus();
+                    }
+                    catch (NexusModsApiException exception)
+                    {
+                        apiFailures++;
+                        if (exception.ShouldPauseRequests)
+                        {
+                            canRefreshFromApi = false;
+                        }
+                    }
+                    catch (Exception exception) when (exception is HttpRequestException
+                        or OperationCanceledException
+                        or JsonException
+                        or IOException
+                        or UnauthorizedAccessException)
+                    {
+                        apiFailures++;
+                        canRefreshFromApi = false;
+                    }
+                }
+
+                if (filesResult is null)
                 {
                     filesResult = TryLoadCompatibleCachedFiles(result);
                     if (filesResult is null)
@@ -4093,7 +4172,9 @@ public partial class MainWindow : Window
             }
         }
 
-        _lastNexusFilesCacheSummary = $"Nexus files: {corrected} corrected, {cached} reused from cache, {failed} skipped. API refresh disabled.";
+        _lastNexusFilesCacheSummary =
+            $"Nexus files: {corrected} corrected, {refreshed} refreshed, {cached} reused from cache, {failed} skipped" +
+            (apiFailures > 0 ? $", {apiFailures} API error(s)." : ".");
         ShowSelectedMod(ModsListView.SelectedItem as ModRow);
         ModsListView.Items.Refresh();
         return confirmedResults;
@@ -5504,6 +5585,7 @@ public partial class MainWindow : Window
         }
 
         OpenSelectedModFilesPageButton.IsEnabled = true;
+        RefreshSelectedNexusFileActionState(NexusOAuthAppConfiguration.CreateOptions());
 
         var fingerprint = BuildNexusFilesFingerprint(selectedMod);
         var cached = _nexusModFilesService.TryLoadCached(
@@ -5534,7 +5616,89 @@ public partial class MainWindow : Window
     {
         NexusFilesListView.ItemsSource = Array.Empty<NexusFileRow>();
         SelectedNexusFilesStatusText.Text = statusText;
+        RefreshSelectedModFilesButton.IsEnabled = false;
         OpenSelectedModFilesPageButton.IsEnabled = false;
+    }
+
+    private void RefreshSelectedNexusFileActionState(NexusOAuthOptions options)
+    {
+        var selectedMod = ModsListView.SelectedItem as ModRow;
+        var hasLinkedMod = selectedMod is not null && CanUseNexusFiles(selectedMod);
+        RefreshSelectedModFilesButton.IsEnabled = hasLinkedMod
+            && options.IsConfigured
+            && _nexusOAuthContext is not null
+            && !_isNexusOAuthBusy;
+        RefreshSelectedModFilesButton.ToolTip = !hasLinkedMod
+            ? "Select a Nexus-linked mod first."
+            : !options.IsConfigured
+                ? "Nexus OAuth registration is pending."
+                : _nexusOAuthContext is null
+                    ? "Connect your Nexus account in Settings first."
+                    : _isNexusOAuthBusy
+                        ? "Wait for the current Nexus account action to finish."
+                        : "Refresh the file list through the connected Nexus account.";
+    }
+
+    private async void RefreshSelectedModFiles_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryGetSelectedNexusMod(out var selectedMod) || _isNexusOAuthBusy)
+        {
+            return;
+        }
+
+        var options = NexusOAuthAppConfiguration.CreateOptions();
+        if (!options.IsConfigured || _nexusOAuthContext is null)
+        {
+            MessageBox.Show(
+                this,
+                "Connect your Nexus account in Settings before refreshing the file list.",
+                "Nexus account required",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        VirtualLaunchProgressDialog? progress = null;
+        try
+        {
+            RefreshSelectedModFilesButton.IsEnabled = false;
+            progress = ShowProgress("Nexus Files", "Refreshing Nexus files", selectedMod.DisplayName);
+            var fingerprint = BuildNexusFilesFingerprint(selectedMod);
+            var result = await _nexusModFilesService.LoadOrRefreshAsync(
+                _managerPaths,
+                selectedMod.GameDomain,
+                selectedMod.NexusModId!.Value,
+                fingerprint,
+                cancellationToken => _nexusModsApiClient.GetModFilesAsync(
+                    selectedMod.GameDomain,
+                    selectedMod.NexusModId.Value,
+                    _nexusOAuthTokenProvider,
+                    options,
+                    cancellationToken),
+                forceRefresh: true);
+            ShowNexusFilesResult(result);
+        }
+        catch (NexusOAuthAuthenticationRequiredException exception)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = exception.Message;
+            RefreshNexusAccountStatus();
+            MessageBox.Show(this, exception.Message, "Nexus account required", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception exception) when (exception is NexusModsApiException
+            or HttpRequestException
+            or OperationCanceledException
+            or JsonException
+            or IOException
+            or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, exception.Message, "Refresh Nexus files failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            CloseProgress(progress);
+            RefreshSelectedNexusFileActionState(options);
+        }
     }
 
     private void OpenSelectedModFilesPage_Click(object sender, RoutedEventArgs e)
@@ -5789,6 +5953,7 @@ public partial class MainWindow : Window
     {
         var options = NexusOAuthAppConfiguration.CreateOptions();
         var hasStoredTokens = _nexusOAuthTokenProvider.HasStoredTokens;
+        RefreshSelectedNexusFileActionState(options);
 
         if (_isNexusOAuthBusy)
         {

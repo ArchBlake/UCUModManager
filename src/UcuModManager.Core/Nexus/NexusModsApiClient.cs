@@ -63,7 +63,9 @@ public sealed class NexusModsApiClient : IDisposable
         using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"Nexus API request failed: {(int)response.StatusCode} {response.ReasonPhrase}.");
+            throw new NexusModsApiException(
+                $"Nexus API request failed: {(int)response.StatusCode} {response.ReasonPhrase}.",
+                (int)response.StatusCode);
         }
 
         var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);

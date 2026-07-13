@@ -1432,6 +1432,11 @@
                                         <DockPanel Margin="0,0,0,6" LastChildFill="False">
                                             <TextBlock Text="Files" Style="{StaticResource MutedText}" DockPanel.Dock="Left" VerticalAlignment="Center" />
                                             <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
+                                                <Button x:Name="RefreshSelectedModFilesButton"
+                                                        Content="Refresh Files"
+                                                        Style="{StaticResource SecondaryButton}"
+                                                        Click="RefreshSelectedModFiles_Click"
+                                                        ToolTip="Refresh the file list through the connected Nexus account." />
                                                 <Button x:Name="OpenSelectedModFilesPageButton"
                                                         Content="Open Files Page"
                                                         Style="{StaticResource SecondaryButton}"

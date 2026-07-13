@@ -36,9 +36,11 @@ public sealed class NexusModsApiClientTests
         using var httpClient = new HttpClient(handler);
         using var client = new NexusModsApiClient(httpClient, "test");
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+        var exception = await Assert.ThrowsAsync<NexusModsApiException>(
             () => client.GetModFilesAsync("scavprototype", 53, "access-token"));
 
         Assert.DoesNotContain("sensitive-response", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(500, exception.StatusCode);
+        Assert.True(exception.ShouldPauseRequests);
     }
 }
