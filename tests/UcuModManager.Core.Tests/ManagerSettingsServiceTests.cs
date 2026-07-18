@@ -5,6 +5,27 @@ namespace UcuModManager.Core.Tests;
 public sealed class ManagerSettingsServiceTests
 {
     [Fact]
+    public void SaveAndLoad_PreservesNexusCatalogCompactMode()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), "ucu-settings-view-test-" + Guid.NewGuid().ToString("N"));
+        var managerPaths = new ManagerPaths(rootPath);
+        Directory.CreateDirectory(rootPath);
+        try
+        {
+            var service = new ManagerSettingsService();
+            service.Save(managerPaths, ManagerSettings.Empty with { NexusCatalogCompactMode = true });
+
+            var settings = service.Load(managerPaths);
+
+            Assert.True(settings.NexusCatalogCompactMode);
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
     public void LoadAndSave_RemovesLegacyUserOAuthConfiguration()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), "ucu-settings-test-" + Guid.NewGuid().ToString("N"));
@@ -31,6 +52,7 @@ public sealed class ManagerSettingsServiceTests
             var savedJson = File.ReadAllText(managerPaths.SettingsPath);
 
             Assert.Equal("scavprototype", settings.NexusGameDomain);
+            Assert.False(settings.NexusCatalogCompactMode);
             Assert.DoesNotContain("NexusOAuthClientId", savedJson, StringComparison.Ordinal);
             Assert.DoesNotContain("NexusOAuthRedirectUri", savedJson, StringComparison.Ordinal);
         }

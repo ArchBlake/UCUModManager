@@ -10,7 +10,7 @@ public sealed class NexusOAuthLoopbackCallbackListenerTests
     public async Task WaitForCallback_IgnoresNoiseAndAcceptsValidCallback()
     {
         var redirectUri = CreateRedirectUri();
-        using var listener = new NexusOAuthLoopbackCallbackListener(redirectUri);
+        using var listener = new NexusOAuthLoopbackCallbackListener(redirectUri, new byte[] { 1, 2, 3 });
         using var httpClient = new HttpClient();
         var waitTask = listener.WaitForCallbackAsync("expected-state", TimeSpan.FromSeconds(5));
 
@@ -19,12 +19,17 @@ public sealed class NexusOAuthLoopbackCallbackListenerTests
             redirectUri + "?state=wrong&code=wrong-code");
         using var validResponse = await httpClient.GetAsync(
             redirectUri + "?state=expected-state&code=authorization-code");
+        var validHtml = await validResponse.Content.ReadAsStringAsync();
         var result = await waitTask;
 
         Assert.Equal(HttpStatusCode.NotFound, wrongPathResponse.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, wrongStateResponse.StatusCode);
         Assert.Equal(HttpStatusCode.OK, validResponse.StatusCode);
         Assert.Equal("authorization-code", result.AuthorizationCode);
+        Assert.Contains("data-theme=\"ucu-dark\"", validHtml, StringComparison.Ordinal);
+        Assert.Contains("data:image/png;base64,AQID", validHtml, StringComparison.Ordinal);
+        Assert.Contains("Nexus account connected", validHtml, StringComparison.Ordinal);
+        Assert.Contains("style-src 'unsafe-inline'", validResponse.Headers.GetValues("Content-Security-Policy").Single(), StringComparison.Ordinal);
     }
 
     [Fact]
