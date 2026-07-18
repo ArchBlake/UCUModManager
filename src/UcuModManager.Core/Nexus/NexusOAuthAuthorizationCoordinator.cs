@@ -63,8 +63,7 @@ public sealed class NexusOAuthAuthorizationCoordinator
                 cancellationToken)
             .ConfigureAwait(false);
 
-        progress?.Report("Saving the protected account connection...");
-        return await _tokenProvider.StoreAuthorizedTokensAsync(tokens, cancellationToken)
+        return await _tokenProvider.StoreAuthorizedTokensAsync(tokens, progress, cancellationToken)
             .ConfigureAwait(false);
     }
 

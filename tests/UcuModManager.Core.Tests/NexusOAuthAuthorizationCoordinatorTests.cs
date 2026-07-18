@@ -27,6 +27,7 @@ public sealed class NexusOAuthAuthorizationCoordinatorTests
         var listener = FakeCallbackListener.Success("authorization-code");
         var coordinator = new NexusOAuthAuthorizationCoordinator(oauthClient, provider, _ => listener);
         var browserOpened = false;
+        var progress = new SynchronousProgress<string>();
 
         var context = await coordinator.ConnectAsync(Options, (authorizationUri, _) =>
         {
@@ -34,7 +35,7 @@ public sealed class NexusOAuthAuthorizationCoordinatorTests
             Assert.Contains("client_id=ucu-test-client", authorizationUri.Query, StringComparison.Ordinal);
             browserOpened = true;
             return Task.CompletedTask;
-        });
+        }, progress);
 
         Assert.True(browserOpened);
         Assert.True(listener.Started);
@@ -43,6 +44,9 @@ public sealed class NexusOAuthAuthorizationCoordinatorTests
         Assert.Equal(1, store.SaveCount);
         Assert.Equal(1, handler.CallCount);
         Assert.True(listener.Disposed);
+        Assert.Contains("Validating Nexus account...", progress.Values);
+        Assert.Contains("Encrypting account connection...", progress.Values);
+        Assert.Equal("Nexus account connected.", progress.Values[^1]);
     }
 
     [Fact]
@@ -213,6 +217,16 @@ public sealed class NexusOAuthAuthorizationCoordinatorTests
         public void ClearTokens()
         {
             _tokens = null;
+        }
+    }
+
+    private sealed class SynchronousProgress<T> : IProgress<T>
+    {
+        public List<T> Values { get; } = new();
+
+        public void Report(T value)
+        {
+            Values.Add(value);
         }
     }
 }

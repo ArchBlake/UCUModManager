@@ -22,16 +22,20 @@ public sealed class NexusOAuthTokenProvider
 
     public async Task<NexusOAuthAccessContext> StoreAuthorizedTokensAsync(
         NexusOAuthTokenSet tokens,
+        IProgress<string>? progress = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tokens);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            progress?.Report("Validating Nexus account...");
             var identity = await _tokenValidator.ValidateAsync(tokens.AccessToken, cancellationToken).ConfigureAwait(false);
             var context = new NexusOAuthAccessContext(tokens, identity);
+            progress?.Report("Encrypting account connection...");
             _tokenStore.SaveTokens(tokens);
             _cachedContext = context;
+            progress?.Report("Nexus account connected.");
             return context;
         }
         finally
