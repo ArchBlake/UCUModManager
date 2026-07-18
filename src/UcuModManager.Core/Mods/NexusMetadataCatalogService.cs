@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Text.Json;
 using UcuModManager.Core.Storage;
 
@@ -16,13 +17,17 @@ public sealed class NexusMetadataCatalogService : IDisposable
 
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
+    private readonly string _applicationVersion;
     private IReadOnlyList<NexusMetadataCatalogEntry>? _memoryCache;
     private NexusMetadataCatalogStatus? _memoryCacheStatus;
 
-    public NexusMetadataCatalogService(HttpClient? httpClient = null)
+    public NexusMetadataCatalogService(HttpClient? httpClient = null, string? applicationVersion = null)
     {
         _httpClient = httpClient ?? new HttpClient();
         _ownsHttpClient = httpClient is null;
+        _applicationVersion = string.IsNullOrWhiteSpace(applicationVersion)
+            ? ResolveApplicationVersion()
+            : applicationVersion.Trim();
     }
 
     public async Task<NexusMetadataCatalogLoadResult> LoadAsync(
@@ -132,13 +137,21 @@ public sealed class NexusMetadataCatalogService : IDisposable
     private async Task<DownloadedCatalog> DownloadCatalogAsync(CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, DefaultCatalogUri);
-        request.Headers.UserAgent.Add(new ProductInfoHeaderValue("UCU-ModManager", "0.1"));
+        request.Headers.UserAgent.Add(new ProductInfoHeaderValue("UCU-ModManager", _applicationVersion));
         using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         return new DownloadedCatalog(
             json,
             response.Content.Headers.LastModified ?? response.Headers.Date);
+    }
+
+    private static string ResolveApplicationVersion()
+    {
+        var assembly = typeof(NexusMetadataCatalogService).Assembly;
+        return assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? assembly.GetName().Version?.ToString(3)
+            ?? "0.0.0";
     }
 
     private static IReadOnlyList<NexusMetadataCatalogEntry> LoadFromFile(string cachePath)

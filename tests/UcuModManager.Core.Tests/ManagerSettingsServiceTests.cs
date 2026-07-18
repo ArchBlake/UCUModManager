@@ -53,6 +53,9 @@ public sealed class ManagerSettingsServiceTests
 
             Assert.Equal("scavprototype", settings.NexusGameDomain);
             Assert.False(settings.NexusCatalogCompactMode);
+            Assert.True(settings.CheckManagerUpdatesOnStartup);
+            Assert.False(settings.IncludeManagerPrereleases);
+            Assert.Null(settings.LastManagerUpdateCheckAt);
             Assert.DoesNotContain("NexusOAuthClientId", savedJson, StringComparison.Ordinal);
             Assert.DoesNotContain("NexusOAuthRedirectUri", savedJson, StringComparison.Ordinal);
         }

@@ -10,7 +10,10 @@ public sealed record ManagerSettings(
     bool ShowAdvancedModColumns = false,
     bool VirtualizationEnabled = true,
     bool VirtualizationIntroShown = false,
-    bool NexusCatalogCompactMode = false)
+    bool NexusCatalogCompactMode = false,
+    bool CheckManagerUpdatesOnStartup = true,
+    bool IncludeManagerPrereleases = false,
+    DateTimeOffset? LastManagerUpdateCheckAt = null)
 {
     public static ManagerSettings Empty { get; } = new(
         string.Empty,
@@ -22,5 +25,8 @@ public sealed record ManagerSettings(
         ShowAdvancedModColumns: false,
         VirtualizationEnabled: true,
         VirtualizationIntroShown: false,
-        NexusCatalogCompactMode: false);
+        NexusCatalogCompactMode: false,
+        CheckManagerUpdatesOnStartup: true,
+        IncludeManagerPrereleases: false,
+        LastManagerUpdateCheckAt: null);
 }

@@ -1,5 +1,4 @@
 param(
-    [Parameter(Mandatory = $true)]
     [ValidatePattern('^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$')]
     [string]$Version,
     [string]$Configuration = "Release"
@@ -10,8 +9,24 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $artifactsRoot = Join-Path $repoRoot "artifacts"
 $publishDir = Join-Path $artifactsRoot "portable\UCU Mod Manager"
-$zipPath = Join-Path $artifactsRoot "UCU-ModManager-$Version-portable.zip"
 $projectPath = Join-Path $repoRoot "src\UcuModManager.App\UcuModManager.App.csproj"
+$versionPropsPath = Join-Path $repoRoot "Directory.Build.props"
+
+[xml]$versionProps = Get-Content -LiteralPath $versionPropsPath -Raw
+$canonicalVersion = @($versionProps.Project.PropertyGroup) |
+    ForEach-Object { $_.Version } |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+    Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace($canonicalVersion)) {
+    throw "Directory.Build.props does not define the canonical Version property."
+}
+
+if (-not [string]::IsNullOrWhiteSpace($Version) -and $Version -ne $canonicalVersion) {
+    throw "Requested version '$Version' does not match canonical version '$canonicalVersion'."
+}
+
+$Version = $canonicalVersion
+$zipPath = Join-Path $artifactsRoot "UCU-ModManager-$Version-win-x64-portable.zip"
 $releaseManifestPath = Join-Path $publishDir "release-manifest.json"
 
 function Assert-InRepoPath([string]$Path) {
@@ -46,8 +61,7 @@ dotnet publish $projectPath `
     -p:UseAppHost=true `
     -p:PublishReadyToRun=false `
     -p:DebugType=None `
-    -p:DebugSymbols=false `
-    -p:Version=$Version
+    -p:DebugSymbols=false
 
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE."
@@ -129,10 +143,17 @@ $releaseManifest |
 Compress-Archive -Path $publishDir -DestinationPath $zipPath -CompressionLevel Optimal
 
 $exePath = Join-Path $publishDir "UCU Mod Manager.exe"
+$productVersion = (Get-Item -LiteralPath $exePath).VersionInfo.ProductVersion
+if ($productVersion -ne $Version) {
+    throw "Published ProductVersion '$productVersion' does not match canonical version '$Version'."
+}
+
 $exeSizeMb = [math]::Round((Get-Item -LiteralPath $exePath).Length / 1MB, 2)
 $zipSizeMb = [math]::Round((Get-Item -LiteralPath $zipPath).Length / 1MB, 2)
 
 [pscustomobject]@{
+    Version = $Version
+    Tag = "v$Version"
     Exe = $exePath
     ExeSizeMB = $exeSizeMb
     Manifest = $releaseManifestPath

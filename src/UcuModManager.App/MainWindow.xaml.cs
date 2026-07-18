@@ -7,6 +7,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -27,6 +28,7 @@ using UcuModManager.Core.Mods;
 using UcuModManager.Core.Nexus;
 using UcuModManager.Core.Profiles;
 using UcuModManager.Core.Storage;
+using UcuModManager.Core.Updates;
 using UcuModManager.Core.Virtualization;
 using MessageBox = UcuModManager.App.DarkMessageBox;
 
@@ -51,6 +53,8 @@ public partial class MainWindow : Window
     private const double ModPluginsColumnWidth = 70;
     private const double ModContentColumnWidth = 74;
     private const double ModConfigsColumnWidth = 72;
+    private static readonly TimeSpan ManagerUpdateCheckInterval = TimeSpan.FromHours(24);
+    private static readonly SemanticVersion CurrentManagerVersion = ResolveCurrentManagerVersion();
 
     private readonly ManagerSettingsService _settingsService = new();
     private readonly ModLibraryService _libraryService = new();
@@ -73,6 +77,8 @@ public partial class MainWindow : Window
     private readonly NexusMetadataMatcher _nexusMetadataMatcher = new();
     private readonly NexusOAuthClient _nexusOAuthClient = new();
     private readonly NexusModsApiClient _nexusModsApiClient = new();
+    private readonly GitHubManagerUpdateService _managerUpdateService = new();
+    private readonly ManagerUpdateDownloadService _managerUpdateDownloadService = new();
     private readonly NexusOAuthTokenProvider _nexusOAuthTokenProvider;
     private readonly NexusOAuthAuthorizationCoordinator _nexusOAuthCoordinator;
     private readonly HttpClient _imageHttpClient = new();
@@ -102,8 +108,12 @@ public partial class MainWindow : Window
     private bool _isAutoLinkNexusRunning;
     private bool _isNexusOAuthBusy;
     private bool _isNexusDownloadBusy;
+    private bool _isManagerUpdateCheckRunning;
+    private bool _isManagerUpdateDownloadRunning;
     private NexusOAuthAccessContext? _nexusOAuthContext;
     private string? _nexusOAuthStatusMessage;
+    private ManagerUpdateCheckResult? _managerUpdateResult;
+    private string? _managerUpdateStatusMessage;
     private IReadOnlyList<string> _nexusCatalogGalleryUrls = Array.Empty<string>();
     private int _nexusCatalogGalleryIndex;
     private int _selectedImageRequestId;
@@ -119,6 +129,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        TitleBarVersionText.Text = $"Version {CurrentManagerVersion}";
+        CurrentManagerVersionText.Text = $"Current version {CurrentManagerVersion}";
         _managerPaths = ResolveManagerPaths();
         _nexusOAuthTokenProvider = new NexusOAuthTokenProvider(
             new NexusOAuthTokenStore(_managerPaths),
@@ -172,6 +184,7 @@ public partial class MainWindow : Window
         }
 
         await ResolveStartupNexusUpdateStatusesAsync();
+        await CheckManagerUpdatesOnStartupAsync();
     }
 
     private async Task ShowVirtualizationIntroIfNeededAsync()
@@ -283,6 +296,8 @@ public partial class MainWindow : Window
         _nexusModDownloadService.Dispose();
         _nexusModFilesService.Dispose();
         _nexusMetadataCatalogService.Dispose();
+        _managerUpdateService.Dispose();
+        _managerUpdateDownloadService.Dispose();
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -1651,7 +1666,7 @@ public partial class MainWindow : Window
         MessageBox.Show(
             this,
             "UCU Mod Manager\n"
-            + "Development Build · Alpha Public\n\n"
+            + $"Version {CurrentManagerVersion}\n\n"
             + "Dev: Arch Blake\n"
             + "Nexus metadata repository: Jimmyking\n\n"
             + "Special thanks: Horus and VoidYuum",
@@ -4242,6 +4257,11 @@ public partial class MainWindow : Window
             MessageBoxImage.Information);
     }
 
+    private void ManagerUpdateBadge_Click(object sender, RoutedEventArgs e)
+    {
+        SelectNavigationView("Settings");
+    }
+
     private void MarkUcuModpackForManualDownload(
         UcuModpackMod mod,
         string reason,
@@ -5738,7 +5758,7 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(
                 this,
-                $"Could not open the Nexus page automatically.\n\n{uri}\n\n{exception.Message}",
+                $"Could not open the page automatically.\n\n{uri}\n\n{exception.Message}",
                 title,
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
@@ -7838,6 +7858,7 @@ public partial class MainWindow : Window
         try
         {
             AutoLinkNexusOnStartupCheckBox.IsChecked = _settings.AutoLinkNexusOnStartup;
+            CheckManagerUpdatesOnStartupCheckBox.IsChecked = _settings.CheckManagerUpdatesOnStartup;
             ShowAdvancedModColumnsCheckBox.IsChecked = _settings.ShowAdvancedModColumns;
             NexusCatalogCompactModeCheckBox.IsChecked = _settings.NexusCatalogCompactMode;
             VirtualizationEnabledCheckBox.IsChecked = _settings.VirtualizationEnabled;
@@ -7850,6 +7871,7 @@ public partial class MainWindow : Window
             NexusGameDomainTextBox.Text = _settings.NexusGameDomain;
             RefreshNexusAccountStatus();
             RefreshNexusMetadataStatusText();
+            RefreshManagerUpdateStatus();
             RefreshVirtualLaunchStatus(overlayPreview);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -7870,6 +7892,9 @@ public partial class MainWindow : Window
             ? Visibility.Visible
             : Visibility.Collapsed;
         AdvancedNexusDomainPanel.Visibility = advancedWidth
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        AdvancedManagerUpdatePanel.Visibility = advancedWidth
             ? Visibility.Visible
             : Visibility.Collapsed;
         SelectedModIdText.Visibility = advancedWidth
@@ -7961,6 +7986,234 @@ public partial class MainWindow : Window
         return value is null
             ? "unknown"
             : value.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+    }
+
+    private async Task CheckManagerUpdatesOnStartupAsync()
+    {
+        if (!_settings.CheckManagerUpdatesOnStartup
+            || _settings.LastManagerUpdateCheckAt is not null
+            && DateTimeOffset.UtcNow - _settings.LastManagerUpdateCheckAt.Value < ManagerUpdateCheckInterval)
+        {
+            return;
+        }
+
+        await CheckManagerUpdatesAsync();
+    }
+
+    private async void CheckManagerUpdates_Click(object sender, RoutedEventArgs e)
+    {
+        await CheckManagerUpdatesAsync();
+    }
+
+    private async Task CheckManagerUpdatesAsync()
+    {
+        if (_isManagerUpdateCheckRunning)
+        {
+            return;
+        }
+
+        _isManagerUpdateCheckRunning = true;
+        _managerUpdateStatusMessage = "Checking GitHub Releases...";
+        RefreshManagerUpdateStatus();
+        var checkedAt = DateTimeOffset.UtcNow;
+        try
+        {
+            _managerUpdateResult = await _managerUpdateService.CheckAsync(
+                CurrentManagerVersion.ToString(),
+                _settings.IncludeManagerPrereleases);
+            checkedAt = _managerUpdateResult.CheckedAt;
+            _managerUpdateStatusMessage = null;
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            or TaskCanceledException
+            or JsonException
+            or FormatException
+            or InvalidOperationException)
+        {
+            _managerUpdateStatusMessage = $"Update check failed: {exception.Message}";
+        }
+        finally
+        {
+            _isManagerUpdateCheckRunning = false;
+            try
+            {
+                _settings = _settings with { LastManagerUpdateCheckAt = checkedAt };
+                _settingsService.Save(_managerPaths, _settings);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                _managerUpdateStatusMessage ??= $"Update status could not be saved: {exception.Message}";
+            }
+
+            RefreshManagerUpdateStatus();
+        }
+    }
+
+    private void ViewManagerUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        var release = _managerUpdateResult?.LatestRelease;
+        if (release is not null)
+        {
+            OpenUri(release.ReleasePageUri.ToString(), "Open manager release failed");
+        }
+    }
+
+    private async void DownloadManagerUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        var release = _managerUpdateResult?.LatestRelease;
+        if (release is null || _isManagerUpdateDownloadRunning)
+        {
+            return;
+        }
+
+        VirtualLaunchProgressDialog? progressDialog = null;
+        try
+        {
+            _isManagerUpdateDownloadRunning = true;
+            RefreshManagerUpdateStatus();
+            progressDialog = ShowProgress(
+                "Download Manager Update",
+                $"Downloading {release.Version}",
+                "Preparing verified GitHub download...");
+            IProgress<ManagerUpdateDownloadProgress> progress = new Progress<ManagerUpdateDownloadProgress>(state =>
+                UpdateProgress(progressDialog, $"Downloading update: {state.Percentage:F0}%"));
+            var destinationDirectory = Path.Combine(_managerPaths.DownloadsPath, "manager-updates");
+            var result = await _managerUpdateDownloadService.DownloadAsync(
+                release,
+                destinationDirectory,
+                progress);
+            CloseProgress(progressDialog);
+            progressDialog = null;
+
+            var answer = MessageBox.Show(
+                this,
+                $"UCU Mod Manager {release.Version} was downloaded and verified.\n\n{result.FilePath}\n\nOpen the download folder?",
+                "Manager update downloaded",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Information);
+            if (answer == MessageBoxResult.Yes)
+            {
+                using var process = Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{result.FilePath}\"")
+                {
+                    UseShellExecute = true
+                });
+            }
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            or TaskCanceledException
+            or IOException
+            or InvalidDataException
+            or UnauthorizedAccessException
+            or InvalidOperationException
+            or System.ComponentModel.Win32Exception)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "Manager update download failed",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        finally
+        {
+            CloseProgress(progressDialog);
+            _isManagerUpdateDownloadRunning = false;
+            RefreshManagerUpdateStatus();
+        }
+    }
+
+    private void RefreshManagerUpdateStatus()
+    {
+        CurrentManagerVersionText.Text = $"Current version {CurrentManagerVersion}";
+        CheckManagerUpdatesOnStartupCheckBox.IsChecked = _settings.CheckManagerUpdatesOnStartup;
+        var prereleasesRequired = CurrentManagerVersion.IsPrerelease;
+        IncludeManagerPrereleasesCheckBox.IsChecked = prereleasesRequired || _settings.IncludeManagerPrereleases;
+        IncludeManagerPrereleasesCheckBox.IsEnabled = !prereleasesRequired && !_isManagerUpdateCheckRunning;
+        CheckManagerUpdatesButton.IsEnabled = !_isManagerUpdateCheckRunning && !_isManagerUpdateDownloadRunning;
+
+        var release = _managerUpdateResult?.LatestRelease;
+        var updateAvailable = _managerUpdateResult?.IsUpdateAvailable == true && release is not null;
+        ViewManagerUpdateButton.IsEnabled = updateAvailable && !_isManagerUpdateCheckRunning;
+        DownloadManagerUpdateButton.IsEnabled = updateAvailable
+            && !_isManagerUpdateCheckRunning
+            && !_isManagerUpdateDownloadRunning;
+        ManagerUpdateBadgeButton.Visibility = updateAvailable ? Visibility.Visible : Visibility.Collapsed;
+        ManagerUpdateBadgeButton.Content = updateAvailable ? $"Update {release!.Version}" : "Update available";
+
+        if (_isManagerUpdateDownloadRunning)
+        {
+            SetStatus(ManagerUpdateStatusText, $"Downloading and verifying {release?.Version}...", "WarningBrush");
+        }
+        else if (_isManagerUpdateCheckRunning)
+        {
+            SetStatus(ManagerUpdateStatusText, "Checking published GitHub releases...", "MutedTextBrush");
+        }
+        else if (!string.IsNullOrWhiteSpace(_managerUpdateStatusMessage))
+        {
+            SetStatus(ManagerUpdateStatusText, _managerUpdateStatusMessage, "WarningBrush");
+        }
+        else if (updateAvailable)
+        {
+            var published = release!.PublishedAt is null
+                ? string.Empty
+                : $" Published {release.PublishedAt.Value.ToLocalTime():yyyy-MM-dd}.";
+            SetStatus(ManagerUpdateStatusText, $"Version {release.Version} is available.{published}", "AccentBrush");
+        }
+        else if (_settings.LastManagerUpdateCheckAt is not null)
+        {
+            SetStatus(
+                ManagerUpdateStatusText,
+                $"You have the latest compatible version. Last checked {FormatLocalDateTime(_settings.LastManagerUpdateCheckAt)}.",
+                "AccentBrush");
+        }
+        else
+        {
+            SetStatus(ManagerUpdateStatusText, "Update check has not run yet.", "MutedTextBrush");
+        }
+    }
+
+    private void CheckManagerUpdatesOnStartupCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isLoadingSettings)
+        {
+            return;
+        }
+
+        SaveManagerUpdatePreference(
+            _settings with
+            {
+                CheckManagerUpdatesOnStartup = CheckManagerUpdatesOnStartupCheckBox.IsChecked == true
+            });
+    }
+
+    private void IncludeManagerPrereleasesCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isLoadingSettings || CurrentManagerVersion.IsPrerelease)
+        {
+            return;
+        }
+
+        SaveManagerUpdatePreference(
+            _settings with
+            {
+                IncludeManagerPrereleases = IncludeManagerPrereleasesCheckBox.IsChecked == true,
+                LastManagerUpdateCheckAt = null
+            });
+    }
+
+    private void SaveManagerUpdatePreference(ManagerSettings settings)
+    {
+        try
+        {
+            _settings = settings;
+            _settingsService.Save(_managerPaths, _settings);
+            RefreshSettingsStatus();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, exception.Message, "Save settings failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            RefreshSettingsStatus();
+        }
     }
 
     private void AutoLinkNexusOnStartupCheckBox_Changed(object sender, RoutedEventArgs e)
@@ -8632,6 +8885,24 @@ public partial class MainWindow : Window
     {
         AutoLinkStatusText.Text = text;
         AutoLinkStatusText.Foreground = (Brush)FindResource(brushResourceKey);
+    }
+
+    private static SemanticVersion ResolveCurrentManagerVersion()
+    {
+        var assembly = typeof(MainWindow).Assembly;
+        var informationalVersion = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+        if (SemanticVersion.TryParse(informationalVersion, out var semanticVersion))
+        {
+            return semanticVersion;
+        }
+
+        var assemblyVersion = assembly.GetName().Version;
+        var fallback = assemblyVersion is null
+            ? "0.0.0"
+            : $"{assemblyVersion.Major}.{assemblyVersion.Minor}.{Math.Max(0, assemblyVersion.Build)}";
+        return SemanticVersion.Parse(fallback);
     }
 
     private static ManagerPaths ResolveManagerPaths()
