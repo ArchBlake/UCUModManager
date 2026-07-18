@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Text.RegularExpressions;
+using UcuModManager.Core.Archives;
 
 namespace UcuModManager.Core.Mods;
 
@@ -17,6 +18,7 @@ public sealed class ModArchiveAnalyzer
         }
 
         using var archive = ZipFile.OpenRead(archivePath);
+        ZipArchiveSafety.Validate(archive);
         var entries = archive.Entries
             .Select(entry => new ArchiveEntryInfo(entry.FullName, entry.Length, IsDirectory(entry.FullName)))
             .ToArray();
