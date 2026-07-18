@@ -12,9 +12,9 @@
 > UCU Mod Manager is currently in early alpha. Please report bugs, launch errors,
 > Mod installation issues, virtualization problems, or any odd behavior in the manager.
 
-[**Download Latest Pre-Release**](https://github.com/ArchBlake/UCUModManager/releases/download/v0.1.4-AV-NOAPI-P/UCU-ModManager-0.1.4-alpha-public-no-API-portable.zip)
+[**Download Latest Pre-Release**](https://github.com/ArchBlake/UCUModManager/releases/download/0.2.0-alpha.1/UCU-ModManager-0.2.0-alpha.1-win-x64-portable.zip)
 
-[**VirusTotal**](https://www.virustotal.com/gui/url/24d48ed7fc376d15a648f425e494b7b174e8938f39d718c7360975efddaf8be0)
+[**VirusTotal**](https://www.virustotal.com/gui/file/8c04592e8abbac23cf7cb15f7db1653ef24e181d3fd8cdb58c2f75d36d5e8efd)
 
 Metadata from [**Jimmyking**](https://github.com/jimmyking9999999) - [**GitHub**](https://github.com/jimmyking9999999/Metadata-generator/tree/main)
 
@@ -38,10 +38,11 @@ The manager treats a clean game with BepInEx installed as the expected base stat
 
 ## Features
 
-- Install mods from archives or folders.
+- Install mods from Nexus Mods catalog, archives or folders.
 - Manage separate profiles with their own enabled mods and load order.
 - Launch the game through an experimental virtual profile.
-- Check for updates and install them via manual archive downloads.
+- Official Nexus Mods authentication using OAuth 2.0 with PKCE.
+- Check for updates and install them automatically or via manual archive downloads.
 - Create and import `.UCU` modpack recipes.
 - Create and import `.UCUP` portable modpacks with included mod files.
 - Show mod dependencies, warnings, conflicts, and Nexus information.
@@ -56,7 +57,3 @@ The manager treats a clean game with BepInEx installed as the expected base stat
 
 - .NET 8 Desktop Runtime.
 - Steam version of Casualties Unknown Demo.
-
-## Notes
-
-This build does not use personal Nexus Mods credentials. Nexus metadata is loaded from the public metadata catalog, and update actions open Nexus file pages for manual archive download.
