@@ -13,6 +13,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{3619952F
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "UcuModManager.ArchiveProbe", "tools\UcuModManager.ArchiveProbe\UcuModManager.ArchiveProbe.csproj", "{DD1BF027-F06E-4BAD-BF74-D6D3B764C795}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "UcuModManager.Core.Tests", "tests\UcuModManager.Core.Tests\UcuModManager.Core.Tests.csproj", "{2D7F58C0-B07E-48B5-972B-C18F9B6FCAB7}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -34,10 +38,15 @@ Global
 		{DD1BF027-F06E-4BAD-BF74-D6D3B764C795}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{DD1BF027-F06E-4BAD-BF74-D6D3B764C795}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{DD1BF027-F06E-4BAD-BF74-D6D3B764C795}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2D7F58C0-B07E-48B5-972B-C18F9B6FCAB7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2D7F58C0-B07E-48B5-972B-C18F9B6FCAB7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2D7F58C0-B07E-48B5-972B-C18F9B6FCAB7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2D7F58C0-B07E-48B5-972B-C18F9B6FCAB7}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{CD4C9EC7-23BB-4BE6-8CC9-1CBE038461AB} = {05DEC21F-AFE1-450B-B124-6B0FA04AB0F1}
 		{6E7243D0-0980-4663-9E56-66C76719C561} = {05DEC21F-AFE1-450B-B124-6B0FA04AB0F1}
 		{DD1BF027-F06E-4BAD-BF74-D6D3B764C795} = {3619952F-2BF0-4BA7-96F8-7C24EB71C6B7}
+		{2D7F58C0-B07E-48B5-972B-C18F9B6FCAB7} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

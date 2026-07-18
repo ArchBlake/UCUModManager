@@ -10,8 +10,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <AssemblyName>UCU ModManager</AssemblyName>
-    <Product>UCU ModManager</Product>
+    <AssemblyName>UCU Mod Manager</AssemblyName>
+    <Product>UCU Mod Manager</Product>
     <ApplicationIcon>Assets\UCU.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>

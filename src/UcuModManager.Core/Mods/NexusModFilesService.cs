@@ -120,6 +120,55 @@ public sealed class NexusModFilesService : IDisposable
         return null;
     }
 
+    public async Task<NexusModFilesLoadResult> LoadOrRefreshAsync(
+        ManagerPaths managerPaths,
+        string gameDomain,
+        int modId,
+        string cacheFingerprint,
+        Func<CancellationToken, Task<IReadOnlyList<NexusModFileInfo>>> fetchFilesAsync,
+        bool forceRefresh = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(managerPaths);
+        ArgumentNullException.ThrowIfNull(fetchFilesAsync);
+        if (string.IsNullOrWhiteSpace(gameDomain))
+        {
+            throw new ArgumentException("Game domain is required.", nameof(gameDomain));
+        }
+
+        if (modId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(modId), "Nexus mod id must be positive.");
+        }
+
+        if (string.IsNullOrWhiteSpace(cacheFingerprint))
+        {
+            throw new ArgumentException("Cache fingerprint is required.", nameof(cacheFingerprint));
+        }
+
+        if (!forceRefresh)
+        {
+            var cached = TryLoadCached(managerPaths, gameDomain, modId, cacheFingerprint);
+            if (cached is not null)
+            {
+                return cached;
+            }
+        }
+
+        var files = NormalizeFiles(await fetchFilesAsync(cancellationToken).ConfigureAwait(false));
+        var result = new NexusModFilesLoadResult(
+            gameDomain.Trim(),
+            modId,
+            cacheFingerprint.Trim(),
+            files,
+            DateTimeOffset.UtcNow,
+            false,
+            null);
+        SaveCache(managerPaths, result);
+        CacheInMemory(BuildMemoryCacheKey(gameDomain, modId, cacheFingerprint), result);
+        return result;
+    }
+
     public void Dispose()
     {
         _memoryCache.Clear();
@@ -192,6 +241,35 @@ public sealed class NexusModFilesService : IDisposable
     private static string BuildMemoryCacheKey(string gameDomain, int modId, string cacheFingerprint)
     {
         return $"{gameDomain.Trim().ToLowerInvariant()}:{modId}:{cacheFingerprint.Trim().ToLowerInvariant()}";
+    }
+
+    private static void SaveCache(ManagerPaths managerPaths, NexusModFilesLoadResult result)
+    {
+        var cachePath = GetCachePath(
+            managerPaths,
+            result.GameDomain,
+            result.ModId,
+            result.CacheFingerprint);
+        Directory.CreateDirectory(Path.GetDirectoryName(cachePath)!);
+        var document = new NexusModFilesCacheDocument(
+            result.GameDomain,
+            result.ModId,
+            result.CacheFingerprint,
+            result.CachedAt,
+            result.Files);
+        var temporaryPath = cachePath + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(document, JsonOptions));
+            File.Move(temporaryPath, cachePath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
     }
 
     private void CacheInMemory(string key, NexusModFilesLoadResult result)

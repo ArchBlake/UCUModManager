@@ -1,27 +1,34 @@
 using Microsoft.Win32;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Interop;
+using System.Windows.Navigation;
 using System.Windows.Threading;
+using UcuModManager.Core.Archives;
 using UcuModManager.Core.BepInEx;
 using UcuModManager.Core.Deployment;
 using UcuModManager.Core.Games;
 using UcuModManager.Core.Mods;
+using UcuModManager.Core.Nexus;
 using UcuModManager.Core.Profiles;
 using UcuModManager.Core.Storage;
+using UcuModManager.Core.Updates;
 using UcuModManager.Core.Virtualization;
 using MessageBox = UcuModManager.App.DarkMessageBox;
 
@@ -36,6 +43,8 @@ public partial class MainWindow : Window
     private const int MaxImageCacheEntries = 96;
     private const int MaxImageDownloadBytes = 12 * 1024 * 1024;
     private const int ImageDownloadBufferSize = 81920;
+    private const int NexusCatalogTilePageSize = 24;
+    private const int NexusCatalogThumbnailWidth = 480;
     private const string SteamAppId = "4576510";
     private const string SteamGameFolderName = "Casualties Unknown Demo";
     private const int MinimumDependencyCandidateScore = 100;
@@ -44,6 +53,8 @@ public partial class MainWindow : Window
     private const double ModPluginsColumnWidth = 70;
     private const double ModContentColumnWidth = 74;
     private const double ModConfigsColumnWidth = 72;
+    private static readonly TimeSpan ManagerUpdateCheckInterval = TimeSpan.FromHours(24);
+    private static readonly SemanticVersion CurrentManagerVersion = ResolveCurrentManagerVersion();
 
     private readonly ManagerSettingsService _settingsService = new();
     private readonly ModLibraryService _libraryService = new();
@@ -61,16 +72,26 @@ public partial class MainWindow : Window
     private readonly VirtualizedLaunchPlanValidator _virtualizedLaunchPlanValidator = new();
     private readonly VirtualizedGameImageBuilder _virtualizedGameImageBuilder = new();
     private readonly NexusModFilesService _nexusModFilesService = new();
+    private readonly NexusModDownloadService _nexusModDownloadService = new();
     private readonly NexusMetadataCatalogService _nexusMetadataCatalogService = new();
     private readonly NexusMetadataMatcher _nexusMetadataMatcher = new();
+    private readonly NexusOAuthClient _nexusOAuthClient = new();
+    private readonly NexusModsApiClient _nexusModsApiClient = new();
+    private readonly GitHubManagerUpdateService _managerUpdateService = new();
+    private readonly ManagerUpdateDownloadService _managerUpdateDownloadService = new();
+    private readonly NexusOAuthTokenProvider _nexusOAuthTokenProvider;
+    private readonly NexusOAuthAuthorizationCoordinator _nexusOAuthCoordinator;
     private readonly HttpClient _imageHttpClient = new();
     private readonly Dictionary<string, BitmapImage> _imageCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Queue<string> _imageCacheOrder = new();
+    private readonly SemaphoreSlim _nexusCatalogTileImageGate = new(4, 4);
     private readonly ObservableCollection<ModRow> _mods = new();
     private readonly ObservableCollection<ProfileRow> _profiles = new();
     private readonly ObservableCollection<NexusCatalogRow> _nexusCatalogRows = new();
+    private readonly ObservableCollection<NexusCatalogTileRow> _nexusCatalogTileRows = new();
     private readonly ObservableCollection<UcuModpackModRow> _modpackProfileRows = new();
     private readonly ObservableCollection<UcuModpackModRow> _ucuModpackRows = new();
+    private readonly HashSet<string> _pendingAutoLinkModIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly ManagerPaths _managerPaths;
 
     private ManagerSettings _settings = ManagerSettings.Empty;
@@ -85,15 +106,42 @@ public partial class MainWindow : Window
     private bool _isLoadingProfiles;
     private bool _isLoadingSettings;
     private bool _isAutoLinkNexusRunning;
+    private bool _isNexusOAuthBusy;
+    private bool _isNexusDownloadBusy;
+    private bool _isManagerUpdateCheckRunning;
+    private bool _isManagerUpdateDownloadRunning;
+    private NexusOAuthAccessContext? _nexusOAuthContext;
+    private string? _nexusOAuthStatusMessage;
+    private ManagerUpdateCheckResult? _managerUpdateResult;
+    private string? _managerUpdateStatusMessage;
+    private IReadOnlyList<string> _nexusCatalogGalleryUrls = Array.Empty<string>();
+    private int _nexusCatalogGalleryIndex;
     private int _selectedImageRequestId;
     private int _nexusBrowserImageRequestId;
+    private int _nexusBrowserGalleryImageRequestId;
+    private int _nexusCatalogTilePageIndex;
+    private int _nexusCatalogTileImageGeneration;
+    private CancellationTokenSource? _nexusCatalogTileImageCancellation;
+    private bool _isSynchronizingNexusCatalogSelection;
     private string? _lastNexusFilesCacheSummary;
     private HwndSource? _windowSource;
 
     public MainWindow()
     {
         InitializeComponent();
+        TitleBarVersionText.Text = $"Version {CurrentManagerVersion}";
+        CurrentManagerVersionText.Text = $"Current version {CurrentManagerVersion}";
         _managerPaths = ResolveManagerPaths();
+        _nexusOAuthTokenProvider = new NexusOAuthTokenProvider(
+            new NexusOAuthTokenStore(_managerPaths),
+            _nexusOAuthClient,
+            new NexusOAuthTokenValidator());
+        _nexusOAuthCoordinator = new NexusOAuthAuthorizationCoordinator(
+            _nexusOAuthClient,
+            _nexusOAuthTokenProvider,
+            redirectUri => new NexusOAuthLoopbackCallbackListener(
+                redirectUri,
+                LoadNexusOAuthLogoBytes()));
         _settings = _settingsService.Load(_managerPaths);
         if (ShouldResetNexusGameDomain(_settings.NexusGameDomain))
         {
@@ -106,6 +154,7 @@ public partial class MainWindow : Window
         ProfilesListBox.ItemsSource = _profiles;
         ModpackExportProfileComboBox.ItemsSource = _profiles;
         NexusCatalogListView.ItemsSource = _nexusCatalogRows;
+        NexusCatalogTileListBox.ItemsSource = _nexusCatalogTileRows;
         ModpackExportProfileListView.ItemsSource = _modpackProfileRows;
         ImportedUcuModpackListView.ItemsSource = _ucuModpackRows;
         SourceInitialized += MainWindow_SourceInitialized;
@@ -115,13 +164,14 @@ public partial class MainWindow : Window
         TryAutoConfigureGameFolder();
         RefreshSetupStatus();
         LoadMods();
-        RefreshSettingsStatus();
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindow_Loaded;
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
         await ShowVirtualizationIntroIfNeededAsync();
+        await RefreshNexusAccountAsync();
         await RefreshNexusMetadataOnStartupAsync();
         if (_settings.AutoLinkNexusOnStartup)
         {
@@ -132,6 +182,9 @@ public partial class MainWindow : Window
                 showBusyCursor: false,
                 allowClearingUnmatchedExistingLinks: false);
         }
+
+        await ResolveStartupNexusUpdateStatusesAsync();
+        await CheckManagerUpdatesOnStartupAsync();
     }
 
     private async Task ShowVirtualizationIntroIfNeededAsync()
@@ -234,11 +287,17 @@ public partial class MainWindow : Window
         _windowSource?.RemoveHook(WndProc);
         _windowSource = null;
 
+        CancelNexusCatalogTileImageLoads();
         _imageCache.Clear();
         _imageCacheOrder.Clear();
         _imageHttpClient.Dispose();
+        _nexusOAuthClient.Dispose();
+        _nexusModsApiClient.Dispose();
+        _nexusModDownloadService.Dispose();
         _nexusModFilesService.Dispose();
         _nexusMetadataCatalogService.Dispose();
+        _managerUpdateService.Dispose();
+        _managerUpdateDownloadService.Dispose();
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -1606,12 +1665,12 @@ public partial class MainWindow : Window
     {
         MessageBox.Show(
             this,
-            "UCU ModManager\n"
-            + "Development Build · Alpha Public\n\n"
+            "UCU Mod Manager\n"
+            + $"Version {CurrentManagerVersion}\n\n"
             + "Dev: Arch Blake\n"
             + "Nexus metadata repository: Jimmyking\n\n"
             + "Special thanks: Horus and VoidYuum",
-            "About UCU ModManager",
+            "About UCU Mod Manager",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
     }
@@ -1687,7 +1746,7 @@ public partial class MainWindow : Window
             MessageBoxImage.Warning);
     }
 
-    private void InstallModArchives_Click(object sender, RoutedEventArgs e)
+    private async void InstallModArchives_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
         {
@@ -1701,10 +1760,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        InstallModArchives(dialog.FileNames);
+        await InstallModArchivesAsync(dialog.FileNames);
     }
 
-    private void InstallModFolder_Click(object sender, RoutedEventArgs e)
+    private async void InstallModFolder_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFolderDialog
         {
@@ -1725,7 +1784,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        InstallModArchives(archives);
+        await InstallModArchivesAsync(archives);
     }
 
     private async void LinkNexus_Click(object sender, RoutedEventArgs e)
@@ -1864,6 +1923,17 @@ public partial class MainWindow : Window
                 UpdateProgress(progressDialog, message.Replace("Auto Link: ", string.Empty, StringComparison.OrdinalIgnoreCase));
             });
             var summary = await AutoLinkNexusModsAsync(progress, allowClearingUnmatchedExistingLinks);
+            while (_pendingAutoLinkModIds.Count > 0)
+            {
+                LoadMods();
+                var pendingModIds = DrainPendingAutoLinkModIds();
+                var pendingSummary = await AutoLinkNexusModsAsync(
+                    progress,
+                    allowClearingUnmatchedExistingLinks: false,
+                    pendingModIds.ToHashSet(StringComparer.OrdinalIgnoreCase));
+                summary = MergeAutoLinkSummaries(summary, pendingSummary);
+            }
+
             LoadMods();
             SetAutoLinkStatus(
                 $"Auto Link: linked {summary.Linked}, repaired {summary.Repaired}, cleared {summary.Cleared}, skipped {summary.Skipped}",
@@ -1915,7 +1985,36 @@ public partial class MainWindow : Window
 
     private async Task<NexusAutoLinkSummary> AutoLinkNexusModsAsync(
         IProgress<string>? progress = null,
-        bool allowClearingUnmatchedExistingLinks = true)
+        bool allowClearingUnmatchedExistingLinks = true,
+        IReadOnlySet<string>? targetModIds = null)
+    {
+        var entries = targetModIds is null
+            ? _libraryEntries
+            : _libraryEntries
+                .Where(entry => targetModIds.Contains(entry.Mod.Id))
+                .ToArray();
+        NexusMetadataCatalogLoadResult catalogLoad;
+        try
+        {
+            catalogLoad = await _nexusMetadataCatalogService.LoadAsync(_managerPaths);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return new NexusAutoLinkSummary(0, 0, 0, 0, 0, entries.Count, 0, 0, 1, false, new[] { exception.Message });
+        }
+
+        return await Task.Run(() => ProcessAutoLinkNexusMods(
+            entries,
+            catalogLoad,
+            progress,
+            allowClearingUnmatchedExistingLinks));
+    }
+
+    private NexusAutoLinkSummary ProcessAutoLinkNexusMods(
+        IReadOnlyList<ModLibraryEntry> entries,
+        NexusMetadataCatalogLoadResult catalogLoad,
+        IProgress<string>? progress,
+        bool allowClearingUnmatchedExistingLinks)
     {
         var linked = 0;
         var completed = 0;
@@ -1928,25 +2027,16 @@ public partial class MainWindow : Window
         var searchErrors = 0;
         var usedApi = false;
         var details = new List<string>();
-        NexusMetadataCatalogLoadResult catalogLoad;
-        try
+        if (!string.IsNullOrWhiteSpace(catalogLoad.Warning))
         {
-            catalogLoad = await _nexusMetadataCatalogService.LoadAsync(_managerPaths);
-            if (!string.IsNullOrWhiteSpace(catalogLoad.Warning))
-            {
-                details.Add(catalogLoad.Warning);
-            }
-        }
-        catch (InvalidOperationException exception)
-        {
-            return new NexusAutoLinkSummary(0, 0, 0, 0, 0, _libraryEntries.Count, 0, 0, 1, false, new[] { exception.Message });
+            details.Add(catalogLoad.Warning);
         }
 
         var processed = 0;
-        foreach (var entry in _libraryEntries)
+        foreach (var entry in entries)
         {
             processed++;
-            progress?.Report($"Auto Link: {processed}/{_libraryEntries.Count} {entry.Mod.Name}");
+            progress?.Report($"Auto Link: {processed}/{entries.Count} {entry.Mod.Name}");
             var match = _nexusMetadataMatcher.FindBestMatch(entry, catalogLoad.Entries);
 
             if (entry.Manifest.Source?.CanCheckUpdates == true)
@@ -2006,6 +2096,119 @@ public partial class MainWindow : Window
         }
 
         return new NexusAutoLinkSummary(linked, completed, repaired, cleared, alreadyLinked, skipped, apiErrors, searchLinked, searchErrors, usedApi, details);
+    }
+
+    private async Task<NexusAutoLinkSummary> AutoLinkImportedModsAsync(
+        IReadOnlyCollection<string> importedModIds,
+        VirtualLaunchProgressDialog? progressDialog)
+    {
+        if (importedModIds.Count == 0)
+        {
+            return new NexusAutoLinkSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, false, Array.Empty<string>());
+        }
+
+        if (_isAutoLinkNexusRunning)
+        {
+            foreach (var modId in importedModIds)
+            {
+                _pendingAutoLinkModIds.Add(modId);
+            }
+
+            return new NexusAutoLinkSummary(
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                false,
+                new[] { "Automatic Nexus linking is already running. The new mods were queued for the same operation." });
+        }
+
+        try
+        {
+            _isAutoLinkNexusRunning = true;
+            AutoLinkNexusButton.IsEnabled = false;
+            var targetModIds = importedModIds
+                .Concat(DrainPendingAutoLinkModIds())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            UpdateProgress(progressDialog, "Matching installed mods with Nexus metadata...");
+            var progress = new Progress<string>(message =>
+                UpdateProgress(
+                    progressDialog,
+                    message.Replace("Auto Link: ", string.Empty, StringComparison.OrdinalIgnoreCase)));
+            var summary = await AutoLinkNexusModsAsync(
+                progress,
+                allowClearingUnmatchedExistingLinks: false,
+                targetModIds);
+            while (_pendingAutoLinkModIds.Count > 0)
+            {
+                LoadMods();
+                var pendingSummary = await AutoLinkNexusModsAsync(
+                    progress,
+                    allowClearingUnmatchedExistingLinks: false,
+                    DrainPendingAutoLinkModIds().ToHashSet(StringComparer.OrdinalIgnoreCase));
+                summary = MergeAutoLinkSummaries(summary, pendingSummary);
+            }
+
+            SetAutoLinkStatus(
+                $"Auto Link: linked {summary.Linked}, refreshed {summary.Completed}, skipped {summary.Skipped}",
+                summary.Skipped == 0 && summary.SearchErrors == 0 ? "AccentBrush" : "WarningBrush");
+            return summary;
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or InvalidOperationException
+            or HttpRequestException
+            or TaskCanceledException)
+        {
+            SetAutoLinkStatus("Auto Link: new mods need review", "WarningBrush");
+            return new NexusAutoLinkSummary(
+                0,
+                0,
+                0,
+                0,
+                0,
+                importedModIds.Count,
+                0,
+                0,
+                1,
+                false,
+                new[] { exception.Message });
+        }
+        finally
+        {
+            _isAutoLinkNexusRunning = false;
+            AutoLinkNexusButton.IsEnabled = true;
+        }
+    }
+
+    private string[] DrainPendingAutoLinkModIds()
+    {
+        var pending = _pendingAutoLinkModIds.ToArray();
+        _pendingAutoLinkModIds.Clear();
+        return pending;
+    }
+
+    private static NexusAutoLinkSummary MergeAutoLinkSummaries(
+        NexusAutoLinkSummary first,
+        NexusAutoLinkSummary second)
+    {
+        return new NexusAutoLinkSummary(
+            first.Linked + second.Linked,
+            first.Completed + second.Completed,
+            first.Repaired + second.Repaired,
+            first.Cleared + second.Cleared,
+            first.AlreadyLinked + second.AlreadyLinked,
+            first.Skipped + second.Skipped,
+            first.ApiErrors + second.ApiErrors,
+            first.SearchLinked + second.SearchLinked,
+            first.SearchErrors + second.SearchErrors,
+            first.UsedApi || second.UsedApi,
+            first.Details.Concat(second.Details).ToArray());
     }
 
     private static bool VersionsEqual(string first, string second)
@@ -2336,13 +2539,33 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var answer = MessageBox.Show(
+            if (_nexusOAuthContext?.Identity.HasPremiumMembership() == true)
+            {
+                var answer = MessageBox.Show(
+                    this,
+                    BuildAutomaticUpdatePrompt(updates),
+                    "Update Mods",
+                    MessageBoxButton.YesNoCancel,
+                    MessageBoxImage.Information);
+                if (answer == MessageBoxResult.Yes)
+                {
+                    await DownloadAndInstallNexusUpdatesAsync(updates);
+                }
+                else if (answer == MessageBoxResult.No)
+                {
+                    OpenManualUpdatePages(updates);
+                }
+
+                return;
+            }
+
+            var manualAnswer = MessageBox.Show(
                 this,
                 BuildManualUpdatePrompt(updates),
                 "Update Mods",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Information);
-            if (answer == MessageBoxResult.Yes)
+            if (manualAnswer == MessageBoxResult.Yes)
             {
                 OpenManualUpdatePages(updates);
             }
@@ -2374,7 +2597,7 @@ public partial class MainWindow : Window
         var deployedFiles = deploymentManifest?.Files
             .Count(file => file.OwningModId.Equals(selectedMod.Id, StringComparison.OrdinalIgnoreCase)) ?? 0;
 
-        var message = $"Remove '{selectedMod.Name}' from UCU ModManager storage?";
+        var message = $"Remove '{selectedMod.Name}' from UCU Mod Manager storage?";
         if (deployedFiles > 0)
         {
             message += $"\n\nThis mod currently has {deployedFiles} managed deployed files in the game folder. Choose Yes to clean the active deployment first, No to remove manager storage only, or Cancel.";
@@ -2545,17 +2768,97 @@ public partial class MainWindow : Window
 
     private void NexusCatalogSearchTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
+        _nexusCatalogTilePageIndex = 0;
         ApplyNexusCatalogFilter();
+    }
+
+    private void NexusCatalogFilterComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        _nexusCatalogTilePageIndex = 0;
+        ApplyNexusCatalogFilter();
+    }
+
+    private void NexusCatalogSortComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        _nexusCatalogTilePageIndex = 0;
+        ApplyNexusCatalogFilter();
+    }
+
+    private void NexusCatalogCompactModeCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isLoadingSettings)
+        {
+            return;
+        }
+
+        var compactMode = NexusCatalogCompactModeCheckBox.IsChecked == true;
+        if (_settings.NexusCatalogCompactMode == compactMode)
+        {
+            ApplyNexusCatalogViewMode();
+            return;
+        }
+
+        try
+        {
+            _settings = _settings with { NexusCatalogCompactMode = compactMode };
+            _settingsService.Save(_managerPaths, _settings);
+            ApplyNexusCatalogViewMode();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, exception.Message, "Save catalog view failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            RefreshSettingsStatus();
+        }
+    }
+
+    private void ApplyNexusCatalogViewMode()
+    {
+        if (NexusCatalogListView is null || NexusCatalogTileView is null)
+        {
+            return;
+        }
+
+        NexusCatalogListView.Visibility = _settings.NexusCatalogCompactMode
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        NexusCatalogTileView.Visibility = _settings.NexusCatalogCompactMode
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+
+        if (_settings.NexusCatalogCompactMode)
+        {
+            _nexusCatalogTileImageGeneration++;
+            CancelNexusCatalogTileImageLoads();
+        }
+        else
+        {
+            var selected = NexusCatalogListView.SelectedItem as NexusCatalogRow;
+            var selectedIndex = selected is null ? -1 : _nexusCatalogRows.IndexOf(selected);
+            if (selectedIndex >= 0)
+            {
+                _nexusCatalogTilePageIndex = selectedIndex / NexusCatalogTilePageSize;
+            }
+
+            RefreshNexusCatalogTilePage(selected?.CatalogId);
+        }
     }
 
     private void ApplyNexusCatalogFilter()
     {
+        if (NexusCatalogListView is null || NexusCatalogSearchTextBox is null)
+        {
+            return;
+        }
+
         var selectedId = (NexusCatalogListView.SelectedItem as NexusCatalogRow)?.CatalogId;
-        var query = NexusCatalogSearchTextBox.Text.Trim();
-        var filtered = _nexusCatalogEntries
+        var query = NexusCatalogSearchTextBox?.Text.Trim() ?? string.Empty;
+        var filter = GetSelectedComboBoxTag(NexusCatalogFilterComboBox, "All");
+        var sort = GetSelectedComboBoxTag(NexusCatalogSortComboBox, "Newest");
+        var rows = _nexusCatalogEntries
             .Where(entry => MatchesNexusCatalogQuery(entry, query))
-            .Select(entry => NexusCatalogRow.FromEntry(entry, IsCatalogEntryInstalled(entry)))
-            .OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(BuildNexusCatalogRow)
+            .Where(row => MatchesNexusCatalogFilter(row, filter));
+        var filtered = SortNexusCatalogRows(rows, sort)
             .ToArray();
 
         _nexusCatalogRows.Clear();
@@ -2565,13 +2868,150 @@ public partial class MainWindow : Window
         }
 
         NexusCatalogStatusText.Text = $"{filtered.Length} of {_nexusCatalogEntries.Count} mods shown.";
-        var selected = _nexusCatalogRows.FirstOrDefault(row => row.CatalogId.Equals(selectedId, StringComparison.OrdinalIgnoreCase))
-            ?? _nexusCatalogRows.FirstOrDefault();
-        NexusCatalogListView.SelectedItem = selected;
+        RefreshNexusCatalogTilePage(selectedId);
+        var selected = _settings.NexusCatalogCompactMode
+            ? _nexusCatalogRows.FirstOrDefault(row => row.CatalogId.Equals(selectedId, StringComparison.OrdinalIgnoreCase))
+                ?? _nexusCatalogRows.FirstOrDefault()
+            : _nexusCatalogTileRows.FirstOrDefault(row => row.CatalogId.Equals(selectedId, StringComparison.OrdinalIgnoreCase))?.CatalogRow
+                ?? _nexusCatalogTileRows.FirstOrDefault()?.CatalogRow;
+        SetNexusCatalogSelection(selected);
         if (selected is null)
         {
             ShowNexusCatalogDetails(null);
         }
+    }
+
+    private void RefreshNexusCatalogTilePage(string? selectedCatalogId = null)
+    {
+        if (NexusCatalogTileListBox is null)
+        {
+            return;
+        }
+
+        var pageCount = Math.Max(1, (int)Math.Ceiling(_nexusCatalogRows.Count / (double)NexusCatalogTilePageSize));
+        _nexusCatalogTilePageIndex = Math.Clamp(_nexusCatalogTilePageIndex, 0, pageCount - 1);
+        var pageRows = _nexusCatalogRows
+            .Skip(_nexusCatalogTilePageIndex * NexusCatalogTilePageSize)
+            .Take(NexusCatalogTilePageSize)
+            .Select(row => new NexusCatalogTileRow(row))
+            .ToArray();
+
+        var generation = ++_nexusCatalogTileImageGeneration;
+        CancelNexusCatalogTileImageLoads();
+        _nexusCatalogTileImageCancellation = new CancellationTokenSource();
+        var cancellationToken = _nexusCatalogTileImageCancellation.Token;
+        try
+        {
+            _isSynchronizingNexusCatalogSelection = true;
+            _nexusCatalogTileRows.Clear();
+            foreach (var row in pageRows)
+            {
+                _nexusCatalogTileRows.Add(row);
+            }
+
+            NexusCatalogTileListBox.SelectedItem = _nexusCatalogTileRows.FirstOrDefault(row =>
+                row.CatalogId.Equals(selectedCatalogId, StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            _isSynchronizingNexusCatalogSelection = false;
+        }
+
+        NexusCatalogTilePageText.Text = _nexusCatalogRows.Count == 0
+            ? "No mods"
+            : $"Page {_nexusCatalogTilePageIndex + 1} of {pageCount}";
+        PreviousNexusCatalogTilePageButton.IsEnabled = _nexusCatalogTilePageIndex > 0;
+        NextNexusCatalogTilePageButton.IsEnabled = _nexusCatalogTilePageIndex + 1 < pageCount;
+        _ = LoadNexusCatalogTileImagesAsync(pageRows, generation, cancellationToken);
+    }
+
+    private void CancelNexusCatalogTileImageLoads()
+    {
+        _nexusCatalogTileImageCancellation?.Cancel();
+        _nexusCatalogTileImageCancellation?.Dispose();
+        _nexusCatalogTileImageCancellation = null;
+    }
+
+    private void PreviousNexusCatalogTilePage_Click(object sender, RoutedEventArgs e)
+    {
+        if (_nexusCatalogTilePageIndex <= 0)
+        {
+            return;
+        }
+
+        _nexusCatalogTilePageIndex--;
+        RefreshNexusCatalogTilePage();
+        SetNexusCatalogSelection(_nexusCatalogTileRows.FirstOrDefault()?.CatalogRow);
+    }
+
+    private void NextNexusCatalogTilePage_Click(object sender, RoutedEventArgs e)
+    {
+        var pageCount = (int)Math.Ceiling(_nexusCatalogRows.Count / (double)NexusCatalogTilePageSize);
+        if (_nexusCatalogTilePageIndex + 1 >= pageCount)
+        {
+            return;
+        }
+
+        _nexusCatalogTilePageIndex++;
+        RefreshNexusCatalogTilePage();
+        SetNexusCatalogSelection(_nexusCatalogTileRows.FirstOrDefault()?.CatalogRow);
+    }
+
+    private NexusCatalogRow BuildNexusCatalogRow(NexusMetadataCatalogEntry entry)
+    {
+        var installedEntry = FindInstalledCatalogEntry(entry);
+        var activeProfileMod = installedEntry is null
+            ? null
+            : _mods.FirstOrDefault(mod => mod.Id.Equals(installedEntry.Mod.Id, StringComparison.OrdinalIgnoreCase));
+        var updateStatus = activeProfileMod?.UpdateStatus;
+        if (string.IsNullOrWhiteSpace(updateStatus)
+            || updateStatus.Equals("Check needed", StringComparison.OrdinalIgnoreCase))
+        {
+            updateStatus = installedEntry?.Manifest.Source?.LastUpdateStatus;
+        }
+
+        var hasUpdate = installedEntry is not null
+            && !string.IsNullOrWhiteSpace(updateStatus)
+            && IsUpdateAvailableStatus(updateStatus);
+        return NexusCatalogRow.FromEntry(entry, installedEntry is not null, hasUpdate);
+    }
+
+    private static bool MatchesNexusCatalogFilter(NexusCatalogRow row, string filter)
+    {
+        return filter switch
+        {
+            "Installed" => row.IsInstalled,
+            "Updates" => row.HasUpdate,
+            "NotInstalled" => !row.IsInstalled,
+            _ => true
+        };
+    }
+
+    private static IOrderedEnumerable<NexusCatalogRow> SortNexusCatalogRows(
+        IEnumerable<NexusCatalogRow> rows,
+        string sort)
+    {
+        return sort switch
+        {
+            "Downloads" => rows
+                .OrderByDescending(row => row.TotalDownloads)
+                .ThenBy(row => row.Name, StringComparer.OrdinalIgnoreCase),
+            "Endorsements" => rows
+                .OrderByDescending(row => row.Endorsements)
+                .ThenBy(row => row.Name, StringComparer.OrdinalIgnoreCase),
+            "Views" => rows
+                .OrderByDescending(row => row.TotalViews)
+                .ThenBy(row => row.Name, StringComparer.OrdinalIgnoreCase),
+            "Name" => rows.OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase),
+            _ => rows
+                .OrderByDescending(row => row.NexusModId ?? 0)
+                .ThenBy(row => row.Name, StringComparer.OrdinalIgnoreCase)
+        };
+    }
+
+    private static string GetSelectedComboBoxTag(ComboBox? comboBox, string fallback)
+    {
+        return (comboBox?.SelectedItem as ComboBoxItem)?.Tag as string ?? fallback;
     }
 
     private static bool MatchesNexusCatalogQuery(NexusMetadataCatalogEntry entry, string query)
@@ -2596,24 +3036,67 @@ public partial class MainWindow : Window
             && value.Contains(query, StringComparison.OrdinalIgnoreCase));
     }
 
-    private bool IsCatalogEntryInstalled(NexusMetadataCatalogEntry entry)
+    private ModLibraryEntry? FindInstalledCatalogEntry(NexusMetadataCatalogEntry entry)
     {
         var downloadReference = entry.DownloadReference;
         var gameDomain = FirstNonEmpty(entry.NexusGameDomain, downloadReference?.GameDomain);
         var modId = entry.NexusModId ?? downloadReference?.ModId;
         if (string.IsNullOrWhiteSpace(gameDomain) || modId is null)
         {
-            return false;
+            return null;
         }
 
-        return _libraryEntries.Any(libraryEntry =>
+        return _libraryEntries.FirstOrDefault(libraryEntry =>
             libraryEntry.Manifest.Source?.ModId == modId
-            && string.Equals(libraryEntry.Manifest.Source.GameDomain, gameDomain, StringComparison.OrdinalIgnoreCase));
+            && string.Equals(
+                libraryEntry.Manifest.Source?.GameDomain,
+                gameDomain,
+                StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsUpdateAvailableStatus(string status)
+    {
+        return status.Equals("Update available", StringComparison.OrdinalIgnoreCase)
+            || status.StartsWith("Update ", StringComparison.OrdinalIgnoreCase);
     }
 
     private void NexusCatalogListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        ShowNexusCatalogDetails(NexusCatalogListView.SelectedItem as NexusCatalogRow);
+        if (_isSynchronizingNexusCatalogSelection)
+        {
+            return;
+        }
+
+        SetNexusCatalogSelection(NexusCatalogListView.SelectedItem as NexusCatalogRow);
+    }
+
+    private void NexusCatalogTileListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isSynchronizingNexusCatalogSelection)
+        {
+            return;
+        }
+
+        SetNexusCatalogSelection((NexusCatalogTileListBox.SelectedItem as NexusCatalogTileRow)?.CatalogRow);
+    }
+
+    private void SetNexusCatalogSelection(NexusCatalogRow? row)
+    {
+        try
+        {
+            _isSynchronizingNexusCatalogSelection = true;
+            NexusCatalogListView.SelectedItem = row;
+            NexusCatalogTileListBox.SelectedItem = row is null
+                ? null
+                : _nexusCatalogTileRows.FirstOrDefault(tile =>
+                    tile.CatalogId.Equals(row.CatalogId, StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            _isSynchronizingNexusCatalogSelection = false;
+        }
+
+        ShowNexusCatalogDetails(row);
     }
 
     private void ShowNexusCatalogDetails(NexusCatalogRow? row)
@@ -2623,9 +3106,12 @@ public partial class MainWindow : Window
             NexusCatalogNameText.Text = "No mod selected";
             NexusCatalogMetaText.Text = string.Empty;
             NexusCatalogStatsText.Text = string.Empty;
-            NexusCatalogDescriptionText.Text = string.Empty;
+            SetFormattedNexusDescription(NexusCatalogDescriptionViewer, null);
             NexusCatalogImage.Source = null;
             OpenNexusCatalogButton.IsEnabled = false;
+            SetNexusCatalogGallery(null);
+            OpenNexusCatalogPostsButton.IsEnabled = false;
+            RefreshNexusCatalogActionState();
             return;
         }
 
@@ -2633,9 +3119,63 @@ public partial class MainWindow : Window
         NexusCatalogNameText.Text = row.Name;
         NexusCatalogMetaText.Text = $"{row.Version} - {row.Author} - Nexus #{row.NexusModIdText}";
         NexusCatalogStatsText.Text = $"Downloads: {row.Downloads} - Endorsements: {FormatNullableCount(entry.Statistics?.Endorsements)}";
-        NexusCatalogDescriptionText.Text = CleanNexusDescription(entry.Description);
+        SetFormattedNexusDescription(NexusCatalogDescriptionViewer, entry.Description);
         OpenNexusCatalogButton.IsEnabled = !string.IsNullOrWhiteSpace(entry.NexusPageUrl);
+        OpenNexusCatalogPostsButton.IsEnabled = !string.IsNullOrWhiteSpace(entry.NexusPageUrl);
         SetNexusCatalogImage(entry.Images.FirstOrDefault() ?? entry.BestIconUrl);
+        SetNexusCatalogGallery(entry);
+        RefreshNexusCatalogActionState();
+    }
+
+    private void RefreshNexusCatalogActionState()
+    {
+        if (InstallNexusCatalogButton is null || NexusCatalogInstallAccessText is null)
+        {
+            return;
+        }
+
+        var selected = NexusCatalogListView?.SelectedItem as NexusCatalogRow;
+        var hasPremium = _nexusOAuthContext?.Identity.HasPremiumMembership() == true;
+        InstallNexusCatalogButton.Content = selected?.HasUpdate == true
+            ? "Download Update"
+            : selected?.IsInstalled == true
+                ? "Reinstall"
+                : "Download & Install";
+        InstallNexusCatalogButton.IsEnabled = selected?.CanDownload == true
+            && hasPremium
+            && !_isNexusOAuthBusy
+            && !_isNexusDownloadBusy;
+
+        if (_isNexusDownloadBusy)
+        {
+            NexusCatalogInstallAccessText.Text = "Automatic download in progress...";
+            NexusCatalogInstallAccessText.Foreground = (Brush)FindResource("AccentBrush");
+            InstallNexusCatalogButton.ToolTip = "Wait for the current Nexus download to finish.";
+        }
+        else if (_nexusOAuthContext is null)
+        {
+            NexusCatalogInstallAccessText.Text = "Automatic installs require a connected Nexus Premium account.\nManual download remains available: select a mod and click Open Nexus.";
+            NexusCatalogInstallAccessText.Foreground = (Brush)FindResource("WarningBrush");
+            InstallNexusCatalogButton.ToolTip = "Connect a Nexus Premium account in Settings, or open the mod page for a manual download.";
+        }
+        else if (!hasPremium)
+        {
+            NexusCatalogInstallAccessText.Text = "Automatic installs require Nexus Premium.\nManual download remains available: select a mod and click Open Nexus.";
+            NexusCatalogInstallAccessText.Foreground = (Brush)FindResource("WarningBrush");
+            InstallNexusCatalogButton.ToolTip = "Nexus Premium is required. Use Open Nexus to download this mod manually.";
+        }
+        else if (selected?.CanDownload != true)
+        {
+            NexusCatalogInstallAccessText.Text = "Select a mod. You can always use Open Nexus for a manual download.";
+            NexusCatalogInstallAccessText.Foreground = (Brush)FindResource("MutedTextBrush");
+            InstallNexusCatalogButton.ToolTip = "Select a mod with a valid Nexus page.";
+        }
+        else
+        {
+            NexusCatalogInstallAccessText.Text = "Premium auto-install is ready. Open Nexus remains available for manual download.";
+            NexusCatalogInstallAccessText.Foreground = (Brush)FindResource("AccentBrush");
+            InstallNexusCatalogButton.ToolTip = "Download the latest Nexus archive and install it into the active profile.";
+        }
     }
 
     private void SetNexusCatalogImage(string? imageUrl)
@@ -2643,6 +3183,87 @@ public partial class MainWindow : Window
         var requestId = ++_nexusBrowserImageRequestId;
         NexusCatalogImage.Source = null;
         _ = LoadNexusCatalogImageAsync(imageUrl, requestId);
+    }
+
+    private async Task LoadNexusCatalogTileImagesAsync(
+        IReadOnlyList<NexusCatalogTileRow> rows,
+        int generation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.WhenAll(rows.Select(row =>
+                LoadNexusCatalogTileImageAsync(row, generation, cancellationToken)));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private async Task LoadNexusCatalogTileImageAsync(
+        NexusCatalogTileRow row,
+        int generation,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(row.ThumbnailUrl)
+            || !Uri.TryCreate(row.ThumbnailUrl, UriKind.Absolute, out var uri)
+            || (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+                && !uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        var cacheKey = $"tile:{uri.AbsoluteUri}";
+        if (_imageCache.TryGetValue(cacheKey, out var cachedImage))
+        {
+            if (generation == _nexusCatalogTileImageGeneration)
+            {
+                row.Thumbnail = cachedImage;
+            }
+
+            return;
+        }
+
+        await _nexusCatalogTileImageGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_imageCache.TryGetValue(cacheKey, out cachedImage))
+            {
+                if (generation == _nexusCatalogTileImageGeneration)
+                {
+                    row.Thumbnail = cachedImage;
+                }
+
+                return;
+            }
+
+            var image = await DownloadBitmapImageAsync(uri, NexusCatalogThumbnailWidth, cancellationToken);
+            if (image is null)
+            {
+                return;
+            }
+
+            CacheImage(cacheKey, image);
+            if (generation == _nexusCatalogTileImageGeneration)
+            {
+                row.Thumbnail = image;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            or TaskCanceledException
+            or IOException
+            or InvalidDataException
+            or NotSupportedException
+            or ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            _nexusCatalogTileImageGate.Release();
+        }
     }
 
     private async Task LoadNexusCatalogImageAsync(string? imageUrl, int requestId)
@@ -2688,6 +3309,145 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SetNexusCatalogGallery(NexusMetadataCatalogEntry? entry)
+    {
+        _nexusCatalogGalleryUrls = entry?.Images
+            .Append(entry.BestIconUrl)
+            .Where(url => !string.IsNullOrWhiteSpace(url)
+                && Uri.TryCreate(url, UriKind.Absolute, out var uri)
+                && (uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+                    || uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)))
+            .Select(url => url!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray()
+            ?? Array.Empty<string>();
+        _nexusCatalogGalleryIndex = 0;
+
+        NexusCatalogImagesTab.Header = $"Images ({_nexusCatalogGalleryUrls.Count})";
+        OpenNexusCatalogImagesPageButton.IsEnabled = !string.IsNullOrWhiteSpace(entry?.NexusPageUrl);
+        RefreshNexusCatalogGallery();
+    }
+
+    private void RefreshNexusCatalogGallery()
+    {
+        var count = _nexusCatalogGalleryUrls.Count;
+        PreviousNexusCatalogImageButton.IsEnabled = count > 1;
+        NextNexusCatalogImageButton.IsEnabled = count > 1;
+        OpenNexusCatalogImageButton.IsEnabled = count > 0;
+        NexusCatalogImageCountText.Text = count == 0
+            ? "No images"
+            : $"{_nexusCatalogGalleryIndex + 1} of {count}";
+
+        var imageUrl = count == 0 ? null : _nexusCatalogGalleryUrls[_nexusCatalogGalleryIndex];
+        SetNexusCatalogGalleryImage(imageUrl);
+    }
+
+    private void SetNexusCatalogGalleryImage(string? imageUrl)
+    {
+        var requestId = ++_nexusBrowserGalleryImageRequestId;
+        NexusCatalogGalleryImage.Source = null;
+        _ = LoadNexusCatalogGalleryImageAsync(imageUrl, requestId);
+    }
+
+    private async Task LoadNexusCatalogGalleryImageAsync(string? imageUrl, int requestId)
+    {
+        if (string.IsNullOrWhiteSpace(imageUrl)
+            || !Uri.TryCreate(imageUrl, UriKind.Absolute, out var uri))
+        {
+            return;
+        }
+
+        if (_imageCache.TryGetValue(uri.AbsoluteUri, out var cachedImage))
+        {
+            if (requestId == _nexusBrowserGalleryImageRequestId)
+            {
+                NexusCatalogGalleryImage.Source = cachedImage;
+            }
+
+            return;
+        }
+
+        try
+        {
+            var image = await DownloadBitmapImageAsync(uri);
+            if (image is null)
+            {
+                return;
+            }
+
+            CacheImage(uri.AbsoluteUri, image);
+            if (requestId == _nexusBrowserGalleryImageRequestId)
+            {
+                NexusCatalogGalleryImage.Source = image;
+            }
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            or TaskCanceledException
+            or IOException
+            or InvalidDataException
+            or NotSupportedException
+            or ObjectDisposedException)
+        {
+        }
+    }
+
+    private void PreviousNexusCatalogImage_Click(object sender, RoutedEventArgs e)
+    {
+        if (_nexusCatalogGalleryUrls.Count < 2)
+        {
+            return;
+        }
+
+        _nexusCatalogGalleryIndex = (_nexusCatalogGalleryIndex - 1 + _nexusCatalogGalleryUrls.Count)
+            % _nexusCatalogGalleryUrls.Count;
+        RefreshNexusCatalogGallery();
+    }
+
+    private void NextNexusCatalogImage_Click(object sender, RoutedEventArgs e)
+    {
+        if (_nexusCatalogGalleryUrls.Count < 2)
+        {
+            return;
+        }
+
+        _nexusCatalogGalleryIndex = (_nexusCatalogGalleryIndex + 1) % _nexusCatalogGalleryUrls.Count;
+        RefreshNexusCatalogGallery();
+    }
+
+    private void OpenNexusCatalogImage_Click(object sender, RoutedEventArgs e)
+    {
+        if (_nexusCatalogGalleryUrls.Count > 0)
+        {
+            OpenUri(_nexusCatalogGalleryUrls[_nexusCatalogGalleryIndex], "Open Nexus image failed");
+        }
+    }
+
+    private void OpenNexusCatalogImagesPage_Click(object sender, RoutedEventArgs e)
+    {
+        OpenSelectedNexusCatalogTab("images", "Open Nexus gallery failed");
+    }
+
+    private void OpenNexusCatalogPosts_Click(object sender, RoutedEventArgs e)
+    {
+        OpenSelectedNexusCatalogTab("posts", "Open Nexus posts failed");
+    }
+
+    private void OpenSelectedNexusCatalogTab(string tab, string errorTitle)
+    {
+        if (NexusCatalogListView.SelectedItem is not NexusCatalogRow selectedRow
+            || string.IsNullOrWhiteSpace(selectedRow.Entry.NexusPageUrl)
+            || !Uri.TryCreate(selectedRow.Entry.NexusPageUrl, UriKind.Absolute, out var pageUri))
+        {
+            return;
+        }
+
+        var builder = new UriBuilder(pageUri)
+        {
+            Query = $"tab={Uri.EscapeDataString(tab)}"
+        };
+        OpenUri(builder.Uri.AbsoluteUri, errorTitle);
+    }
+
     private void OpenNexusCatalog_Click(object sender, RoutedEventArgs e)
     {
         if (NexusCatalogListView.SelectedItem is NexusCatalogRow selectedRow
@@ -2695,6 +3455,129 @@ public partial class MainWindow : Window
         {
             OpenUri(selectedRow.Entry.NexusPageUrl, "Open Nexus page failed");
         }
+    }
+
+    private async void InstallNexusCatalog_Click(object sender, RoutedEventArgs e)
+    {
+        if (NexusCatalogListView.SelectedItem is not NexusCatalogRow selectedRow
+            || !selectedRow.CanDownload
+            || _isNexusDownloadBusy)
+        {
+            return;
+        }
+
+        VirtualLaunchProgressDialog? progress = null;
+        try
+        {
+            _isNexusDownloadBusy = true;
+            RefreshNexusCatalogActionState();
+            var access = await GetPremiumNexusAccessAsync();
+            progress = ShowProgress(
+                "Nexus Download",
+                selectedRow.HasUpdate ? "Downloading mod update" : "Downloading Nexus mod",
+                selectedRow.Name);
+            var result = await DownloadCatalogArchiveAsync(selectedRow, access, progress);
+            CloseProgress(progress);
+            progress = null;
+            await InstallModArchivesAsync([result.ArchivePath]);
+            ApplyNexusCatalogFilter();
+        }
+        catch (NexusOAuthAuthenticationRequiredException exception)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = exception.Message;
+            RefreshNexusAccountStatus();
+            MessageBox.Show(this, exception.Message, "Nexus account required", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception exception) when (exception is NexusModsApiException
+            or HttpRequestException
+            or OperationCanceledException
+            or JsonException
+            or IOException
+            or InvalidDataException
+            or InvalidOperationException
+            or UnauthorizedAccessException)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message + "\n\nUse Open Nexus to download the archive manually.",
+                "Nexus installation failed",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        finally
+        {
+            CloseProgress(progress);
+            _isNexusDownloadBusy = false;
+            RefreshNexusCatalogActionState();
+        }
+    }
+
+    private async Task<NexusOAuthAccessContext> GetPremiumNexusAccessAsync()
+    {
+        var options = NexusOAuthAppConfiguration.CreateOptions();
+        if (!options.IsConfigured)
+        {
+            throw new NexusOAuthAuthenticationRequiredException("Nexus OAuth is not configured for this build.");
+        }
+
+        var access = await _nexusOAuthTokenProvider.GetAccessContextAsync(options);
+        _nexusOAuthContext = access;
+        _nexusOAuthStatusMessage = null;
+        RefreshNexusAccountStatus();
+        if (!access.Identity.HasPremiumMembership())
+        {
+            throw new InvalidOperationException(
+                "Automatic Nexus downloads require an active Premium membership. Open the Nexus page to download manually.");
+        }
+
+        return access;
+    }
+
+    private async Task<NexusModDownloadResult> DownloadCatalogArchiveAsync(
+        NexusCatalogRow row,
+        NexusOAuthAccessContext access,
+        VirtualLaunchProgressDialog? progress)
+    {
+        var entry = row.Entry;
+        var downloadReference = entry.DownloadReference;
+        var gameDomain = FirstNonEmpty(entry.NexusGameDomain, downloadReference?.GameDomain);
+        var modId = entry.NexusModId ?? downloadReference?.ModId;
+        if (string.IsNullOrWhiteSpace(gameDomain) || modId is null)
+        {
+            throw new InvalidOperationException("The selected catalog entry does not contain a valid Nexus mod reference.");
+        }
+
+        NexusModFileInfo? selectedFile = null;
+        var fileId = downloadReference?.FileId;
+        if (fileId is null)
+        {
+            UpdateProgress(progress, "Finding the latest downloadable Nexus file...");
+            var files = await _nexusModsApiClient.GetModFilesAsync(
+                gameDomain,
+                modId.Value,
+                access.Tokens.AccessToken);
+            selectedFile = ChooseLatestUpdateFile(files);
+            fileId = selectedFile?.FileId;
+        }
+
+        if (fileId is null)
+        {
+            throw new InvalidOperationException("Nexus metadata does not identify a downloadable file for this mod.");
+        }
+
+        var preferredFileName = selectedFile?.FileName
+            ?? $"{row.Name}-{row.Version}.zip";
+        var downloadProgress = new Progress<NexusModDownloadProgress>(state =>
+            UpdateProgress(progress, state.Status));
+        return await _nexusModDownloadService.DownloadAsync(
+            gameDomain,
+            modId.Value,
+            fileId.Value,
+            access.Tokens.AccessToken,
+            _managerPaths.DownloadsPath,
+            preferredFileName,
+            downloadProgress);
     }
 
     private void RefreshModpacksView()
@@ -3019,31 +3902,35 @@ public partial class MainWindow : Window
             ShowImportedUcuModpack(package, dialog.FileName);
             CloseProgress(progress);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException
+            or UnauthorizedAccessException
+            or JsonException
+            or InvalidOperationException)
         {
             CloseProgress(OwnedWindows.OfType<VirtualLaunchProgressDialog>().FirstOrDefault(window => window.Title == "Import Modpack"));
             MessageBox.Show(this, exception.Message, "Import .UCU failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
-    private static UcuModpackPackage LoadPortableUcuModpackManifest(string filePath)
+    private UcuModpackPackage LoadPortableUcuModpackManifest(string filePath)
     {
         using var archive = ZipFile.OpenRead(filePath);
+        ZipArchiveSafety.Validate(archive);
         var entry = archive.GetEntry("modpack.json")
             ?? throw new InvalidOperationException("The .UCUP file does not contain modpack.json.");
+        if (entry.Length > 4 * 1024 * 1024)
+        {
+            throw new InvalidDataException("The .UCUP manifest is too large.");
+        }
+
         using var stream = entry.Open();
         var package = JsonSerializer.Deserialize<UcuModpackPackage>(stream, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
             ?? throw new InvalidOperationException("The .UCUP manifest is empty or invalid.");
-        if (package.Mods.Count == 0)
+        return _ucuModpackService.Validate(package with
         {
-            throw new InvalidOperationException("The .UCUP file does not contain any mods.");
-        }
-
-        return package with
-        {
-            Mods = package.Mods.OrderBy(mod => mod.Priority).ToArray(),
             PackageKind = UcuModpackPackage.PackageKindPortable
-        };
+        }, ".UCUP");
     }
 
     private void OpenImportedUcuPages_Click(object sender, RoutedEventArgs e)
@@ -3094,7 +3981,7 @@ public partial class MainWindow : Window
             .OrderBy(mod => mod.Priority)
             .Select(mod => UcuModpackModRow.FromMod(
                 mod,
-                FindInstalledLibraryEntryForUcuMod(mod) is not null,
+                FindCompatibleInstalledLibraryEntryForUcuMod(mod) is not null,
                 _manualDownloadModpackKeys.Contains(BuildUcuModpackKey(mod)),
                 _settings.ShowAdvancedModColumns)))
         {
@@ -3102,14 +3989,64 @@ public partial class MainWindow : Window
         }
 
         var linked = package.Mods.Count(mod => GetUcuModId(mod) is not null && !string.IsNullOrWhiteSpace(GetUcuGameDomain(mod)));
-        var enabled = package.Mods.Count(mod => mod.IsEnabled);
         var kind = _importedUcuModpackIsPortable ? ".UCUP portable" : ".UCU recipe";
         ModpacksStatusText.Text = $"Imported {kind}: {package.Mods.Count} mods. Linked to Nexus: {linked}.";
         ImportedUcuNameText.Text = package.ProfileName;
         ImportedUcuPathText.Text = string.IsNullOrWhiteSpace(filePath) ? string.Empty : filePath;
-        ImportedUcuSummaryText.Text = $"Enabled: {enabled}\nDisabled: {package.Mods.Count - enabled}\nCreated: {package.CreatedAt.LocalDateTime:g}\nType: {kind}";
-        InstallImportedUcuModpackButton.IsEnabled = package.Mods.Count > 0;
         OpenImportedUcuPagesButton.IsEnabled = linked > 0;
+        RefreshImportedModpackInstallActionState();
+    }
+
+    private void RefreshImportedModpackInstallActionState()
+    {
+        if (InstallImportedUcuModpackButton is null)
+        {
+            return;
+        }
+
+        if (_importedUcuModpack is null)
+        {
+            InstallImportedUcuModpackButton.Content = "Install Modpack";
+            InstallImportedUcuModpackButton.ToolTip = "Import a modpack before installation.";
+            InstallImportedUcuModpackButton.IsEnabled = false;
+            return;
+        }
+
+        if (_importedUcuModpackIsPortable)
+        {
+            InstallImportedUcuModpackButton.Content = "Install Modpack";
+            InstallImportedUcuModpackButton.ToolTip = "Install the profile and embedded mod archives from this .UCUP file.";
+            InstallImportedUcuModpackButton.IsEnabled = !_isNexusDownloadBusy
+                && _importedUcuModpack.Mods.Count > 0;
+            UpdateImportedModpackSummary();
+            return;
+        }
+
+        var hasPremium = _nexusOAuthContext?.Identity.HasPremiumMembership() == true;
+        InstallImportedUcuModpackButton.Content = hasPremium ? "Download & Install" : "Install Available Mods";
+        InstallImportedUcuModpackButton.ToolTip = hasPremium
+            ? "Download missing Nexus mods automatically and install the complete .UCU profile."
+            : "Use installed mods now. Missing mods will remain available for manual Nexus download.";
+        InstallImportedUcuModpackButton.IsEnabled = !_isNexusDownloadBusy
+            && _importedUcuModpack.Mods.Count > 0;
+        UpdateImportedModpackSummary();
+    }
+
+    private void UpdateImportedModpackSummary()
+    {
+        if (_importedUcuModpack is null || ImportedUcuSummaryText is null)
+        {
+            return;
+        }
+
+        var enabled = _importedUcuModpack.Mods.Count(mod => mod.IsEnabled);
+        var kind = _importedUcuModpackIsPortable ? ".UCUP portable" : ".UCU recipe";
+        var installMethod = _importedUcuModpackIsPortable
+            ? "Embedded mod archives"
+            : _nexusOAuthContext?.Identity.HasPremiumMembership() == true
+                ? "Automatic Nexus download (Premium)"
+                : "Installed mods + manual downloads";
+        ImportedUcuSummaryText.Text = $"Enabled: {enabled}\nDisabled: {_importedUcuModpack.Mods.Count - enabled}\nCreated: {_importedUcuModpack.CreatedAt.LocalDateTime:g}\nType: {kind}\nInstall: {installMethod}";
     }
 
     private async void InstallImportedUcuModpack_Click(object sender, RoutedEventArgs e)
@@ -3124,7 +4061,9 @@ public partial class MainWindow : Window
             this,
             _importedUcuModpackIsPortable
                 ? $"Install '{_importedUcuModpack.ProfileName}' as a new profile?\n\nMods: {_importedUcuModpack.Mods.Count}"
-                : $"Create '{_importedUcuModpack.ProfileName}' as a new profile from this .UCU recipe?\n\nInstalled matching mods will be linked. Missing mods will be marked for manual Nexus download.",
+                : _nexusOAuthContext?.Identity.HasPremiumMembership() == true
+                    ? $"Download missing Nexus mods and install '{_importedUcuModpack.ProfileName}' as a new profile?\n\nMods: {_importedUcuModpack.Mods.Count}\nNexus Premium: automatic downloads enabled."
+                    : $"Create '{_importedUcuModpack.ProfileName}' as a new profile from this .UCU recipe?\n\nInstalled matching mods will be linked. Missing mods will remain available for manual Nexus download.",
             "Install .UCU Modpack",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);
@@ -3162,7 +4101,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            InstallImportedUcuModpackButton.IsEnabled = _importedUcuModpack is not null;
+            RefreshImportedModpackInstallActionState();
         }
     }
 
@@ -3173,14 +4112,14 @@ public partial class MainWindow : Window
         _manualDownloadModpackKeys.Clear();
         var modIdsByPriority = new Dictionary<int, string>();
         var outcomes = new List<ModInstallOutcome>();
+        var missingMods = new List<UcuModpackMod>();
 
         foreach (var mod in package.Mods.OrderBy(mod => mod.Priority))
         {
             ModpacksStatusText.Text = $"Matching {mod.Name}...";
             UpdateProgress(progress, $"Matching {mod.Name}...");
 
-            var existing = FindInstalledLibraryEntryForUcuMod(mod, requireSameFile: true)
-                ?? FindInstalledLibraryEntryForUcuMod(mod, requireSameFile: false)
+            var existing = FindCompatibleInstalledLibraryEntryForUcuMod(mod)
                 ?? FindInstalledLibraryEntryByNameAndVersion(mod);
             if (existing is not null)
             {
@@ -3188,10 +4127,97 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            _manualDownloadModpackKeys.Add(BuildUcuModpackKey(mod));
-            outcomes.Add(ModInstallOutcome.Failure(
-                mod.Name,
-                "Archive is not installed. Open the Nexus files page, download the archive manually, then install it with Install Mods."));
+            missingMods.Add(mod);
+        }
+
+        var canDownloadAutomatically = missingMods.Count > 0
+            && _nexusOAuthContext?.Identity.HasPremiumMembership() == true;
+        if (canDownloadAutomatically)
+        {
+            _isNexusDownloadBusy = true;
+            RefreshNexusCatalogActionState();
+            try
+            {
+                NexusOAuthAccessContext? access = null;
+                try
+                {
+                    access = await GetPremiumNexusAccessAsync();
+                }
+                catch (Exception exception) when (exception is NexusOAuthAuthenticationRequiredException
+                    or InvalidOperationException)
+                {
+                    if (exception is NexusOAuthAuthenticationRequiredException)
+                    {
+                        _nexusOAuthContext = null;
+                        _nexusOAuthStatusMessage = "Connect Nexus again to restore automatic downloads.";
+                        RefreshNexusAccountStatus();
+                    }
+
+                    foreach (var mod in missingMods)
+                    {
+                        MarkUcuModpackForManualDownload(mod, exception.Message, outcomes);
+                    }
+                }
+
+                for (var index = 0; access is not null && index < missingMods.Count; index++)
+                {
+                    var mod = missingMods[index];
+                    try
+                    {
+                        var download = await DownloadUcuModpackArchiveAsync(
+                            mod,
+                            access,
+                            progress,
+                            index + 1,
+                            missingMods.Count);
+                        UpdateProgress(progress, $"Installing {index + 1}/{missingMods.Count}: {mod.Name}");
+                        var result = _importService.ImportZip(download.Download.ArchivePath, _managerPaths);
+                        result = ApplyUcuModpackNexusSource(result, mod, download.FileId, download.FileVersion);
+                        outcomes.Add(ModInstallOutcome.Success(download.Download.FileName, result));
+                        modIdsByPriority[mod.Priority] = result.Manifest.Mod.Id;
+                    }
+                    catch (Exception exception) when (exception is NexusModsApiException
+                        or HttpRequestException
+                        or OperationCanceledException
+                        or JsonException
+                        or IOException
+                        or InvalidDataException
+                        or InvalidOperationException
+                        or UnauthorizedAccessException)
+                    {
+                        MarkUcuModpackForManualDownload(mod, exception.Message, outcomes);
+                        if (exception is NexusModsApiException { ShouldPauseRequests: true })
+                        {
+                            foreach (var remaining in missingMods.Skip(index + 1))
+                            {
+                                MarkUcuModpackForManualDownload(
+                                    remaining,
+                                    "Automatic download was skipped after Nexus rejected the previous request.",
+                                    outcomes);
+                            }
+
+                            break;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                _isNexusDownloadBusy = false;
+                RefreshNexusCatalogActionState();
+            }
+
+            _libraryEntries = _libraryService.LoadLibrary(_managerPaths);
+        }
+        else
+        {
+            foreach (var mod in missingMods)
+            {
+                var reason = GetUcuModId(mod) is null || string.IsNullOrWhiteSpace(GetUcuGameDomain(mod))
+                    ? "The recipe does not contain a valid Nexus link for this mod."
+                    : "Archive is not installed. Open the Nexus files page, download the archive manually, then install it with Install Mods.";
+                MarkUcuModpackForManualDownload(mod, reason, outcomes);
+            }
         }
 
         if (modIdsByPriority.Count == 0)
@@ -3229,7 +4255,164 @@ public partial class MainWindow : Window
             "Install .UCU complete",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
-        await Task.CompletedTask;
+    }
+
+    private void ManagerUpdateBadge_Click(object sender, RoutedEventArgs e)
+    {
+        SelectNavigationView("Settings");
+    }
+
+    private void MarkUcuModpackForManualDownload(
+        UcuModpackMod mod,
+        string reason,
+        ICollection<ModInstallOutcome> outcomes)
+    {
+        _manualDownloadModpackKeys.Add(BuildUcuModpackKey(mod));
+        outcomes.Add(ModInstallOutcome.Failure(
+            mod.Name,
+            $"{reason} Manual download remains available through Open All Nexus Pages."));
+    }
+
+    private async Task<(NexusModDownloadResult Download, int FileId, string? FileVersion)> DownloadUcuModpackArchiveAsync(
+        UcuModpackMod mod,
+        NexusOAuthAccessContext access,
+        VirtualLaunchProgressDialog? progress,
+        int downloadNumber,
+        int downloadCount)
+    {
+        var gameDomain = GetUcuGameDomain(mod);
+        var modId = GetUcuModId(mod);
+        if (string.IsNullOrWhiteSpace(gameDomain) || modId is null)
+        {
+            throw new InvalidOperationException("The .UCU recipe does not contain a valid Nexus mod reference.");
+        }
+
+        var fileId = GetUcuFileId(mod);
+        NexusModFileInfo? selectedFile = null;
+        if (fileId is null)
+        {
+            UpdateProgress(progress, $"Finding file {downloadNumber}/{downloadCount}: {mod.Name}");
+            var files = await _nexusModsApiClient.GetModFilesAsync(
+                gameDomain,
+                modId.Value,
+                access.Tokens.AccessToken);
+            selectedFile = ChooseUcuModpackFile(mod, files);
+            fileId = selectedFile?.FileId;
+        }
+
+        if (fileId is null)
+        {
+            throw new InvalidOperationException("Nexus did not identify a downloadable file for this modpack entry.");
+        }
+
+        var preferredFileName = selectedFile?.FileName
+            ?? mod.SourceArchiveFileName
+            ?? $"{mod.Name}-{mod.Version ?? "latest"}.zip";
+        var downloadProgress = new Progress<NexusModDownloadProgress>(state =>
+            UpdateProgress(progress, $"{downloadNumber}/{downloadCount} {mod.Name}: {state.Status}"));
+        var download = await _nexusModDownloadService.DownloadAsync(
+            gameDomain,
+            modId.Value,
+            fileId.Value,
+            access.Tokens.AccessToken,
+            _managerPaths.DownloadsPath,
+            preferredFileName,
+            downloadProgress);
+        return (download, fileId.Value, selectedFile?.Version ?? mod.Version);
+    }
+
+    private static NexusModFileInfo? ChooseUcuModpackFile(
+        UcuModpackMod mod,
+        IReadOnlyList<NexusModFileInfo> files)
+    {
+        if (files.Count == 0)
+        {
+            return null;
+        }
+
+        var expectedFileName = Path.GetFileName(mod.SourceArchiveFileName);
+        if (!string.IsNullOrWhiteSpace(expectedFileName))
+        {
+            var fileNameMatch = files.FirstOrDefault(file =>
+                file.FileName.Equals(expectedFileName, StringComparison.OrdinalIgnoreCase));
+            if (fileNameMatch is not null)
+            {
+                return fileNameMatch;
+            }
+        }
+
+        var expectedVersion = GetKnownModVersion(mod.Version);
+        if (!string.IsNullOrWhiteSpace(expectedVersion))
+        {
+            var versionMatch = files
+                .Where(file => VersionsEqual(file.Version, expectedVersion))
+                .OrderBy(file => file.IsOldVersion)
+                .ThenByDescending(file => file.IsPrimary)
+                .ThenByDescending(file => file.UploadedAt ?? DateTimeOffset.MinValue)
+                .ThenByDescending(file => file.FileId)
+                .FirstOrDefault();
+            if (versionMatch is not null)
+            {
+                return versionMatch;
+            }
+        }
+
+        return ChooseLatestUpdateFile(files);
+    }
+
+    private ModImportResult ApplyUcuModpackNexusSource(
+        ModImportResult result,
+        UcuModpackMod mod,
+        int fileId,
+        string? fileVersion)
+    {
+        var gameDomain = GetUcuGameDomain(mod);
+        var modId = GetUcuModId(mod);
+        if (string.IsNullOrWhiteSpace(gameDomain) || modId is null)
+        {
+            return result;
+        }
+
+        var metadata = _nexusCatalogEntries.FirstOrDefault(entry =>
+        {
+            var reference = entry.DownloadReference;
+            var entryDomain = FirstNonEmpty(entry.NexusGameDomain, reference?.GameDomain);
+            var entryModId = entry.NexusModId ?? reference?.ModId;
+            return entryModId == modId
+                && string.Equals(entryDomain, gameDomain, StringComparison.OrdinalIgnoreCase);
+        });
+        var detectedSource = result.Manifest.Source;
+        var source = new ModSourceInfo(
+            "NexusMods",
+            NormalizeNexusGameDomain(gameDomain),
+            modId,
+            fileId,
+            GetKnownModVersion(fileVersion)
+                ?? GetKnownModVersion(mod.Version)
+                ?? GetKnownModVersion(detectedSource?.FileVersion)
+                ?? GetKnownModVersion(result.Manifest.Mod.Version),
+            detectedSource?.FileTimestamp,
+            result.Manifest.SourceArchiveFileName,
+            null,
+            GetKnownModVersion(metadata?.BestVersion),
+            null,
+            metadata?.Name ?? mod.Name,
+            metadata?.Author,
+            FirstNonEmpty(
+                mod.PageUrl,
+                metadata?.NexusPageUrl,
+                $"https://www.nexusmods.com/{gameDomain}/mods/{modId.Value}"),
+            metadata?.BestIconUrl,
+            metadata?.Images,
+            metadata?.Description,
+            metadata?.Statistics?.Endorsements,
+            metadata?.Statistics?.UniqueDownloads,
+            metadata?.Statistics?.TotalDownloads,
+            metadata?.Statistics?.TotalViews,
+            metadata?.DownloadReference?.FileId);
+        var manifest = result.Manifest with { Source = source };
+        _libraryService.SaveManifest(result.ManifestPath, manifest);
+        return result with { Manifest = manifest };
     }
 
     private void InstallPortableUcuModpack(
@@ -3255,10 +4438,12 @@ public partial class MainWindow : Window
         {
             Directory.CreateDirectory(extractRoot);
             using var archive = ZipFile.OpenRead(packagePath);
+            var archiveSafety = ZipArchiveSafety.Validate(archive);
+            ZipArchiveSafety.EnsureSufficientDiskSpace(extractRoot, archiveSafety.TotalUncompressedBytes);
             foreach (var mod in package.Mods.OrderBy(mod => mod.Priority))
             {
                 UpdateProgress(progress, $"Reading {mod.Name}...");
-                var existing = FindInstalledLibraryEntryForUcuMod(mod, requireSameFile: false)
+                var existing = FindCompatibleInstalledLibraryEntryForUcuMod(mod)
                     ?? FindInstalledLibraryEntryByNameAndVersion(mod);
                 if (existing is not null)
                 {
@@ -3279,7 +4464,7 @@ public partial class MainWindow : Window
                     var archiveDirectoryPath = Path.Combine(extractRoot, $"{mod.Priority + 1:000}");
                     Directory.CreateDirectory(archiveDirectoryPath);
                     var archivePath = Path.Combine(archiveDirectoryPath, BuildPortableImportArchiveFileName(mod));
-                    entry.ExtractToFile(archivePath, overwrite: true);
+                    ZipArchiveSafety.ExtractEntryToFile(entry, archivePath, overwrite: true);
                     var preview = _importService.PreviewZip(archivePath, _managerPaths);
                     importPlans.Add(new UcuModpackInstallPlan(mod, archivePath, preview));
                 }
@@ -3423,9 +4608,7 @@ public partial class MainWindow : Window
         return profile;
     }
 
-    private ModLibraryEntry? FindInstalledLibraryEntryForUcuMod(
-        UcuModpackMod mod,
-        bool requireSameFile = false)
+    private ModLibraryEntry? FindCompatibleInstalledLibraryEntryForUcuMod(UcuModpackMod mod)
     {
         var gameDomain = GetUcuGameDomain(mod);
         var modId = GetUcuModId(mod);
@@ -3439,12 +4622,20 @@ public partial class MainWindow : Window
             .Where(entry => string.Equals(entry.Manifest.Source?.GameDomain, gameDomain, StringComparison.OrdinalIgnoreCase))
             .ToArray();
         var fileId = GetUcuFileId(mod);
-        if (!requireSameFile || fileId is null)
+        if (fileId is not null)
+        {
+            return matches.FirstOrDefault(entry => entry.Manifest.Source?.FileId == fileId);
+        }
+
+        var expectedVersion = GetKnownModVersion(mod.Version);
+        if (string.IsNullOrWhiteSpace(expectedVersion))
         {
             return matches.FirstOrDefault();
         }
 
-        return matches.FirstOrDefault(entry => entry.Manifest.Source?.FileId == fileId);
+        return matches.FirstOrDefault(entry =>
+            VersionsEqual(entry.Mod.Version, expectedVersion)
+            || VersionsEqual(entry.Manifest.Source?.FileVersion ?? string.Empty, expectedVersion));
     }
 
     private ModLibraryEntry? FindInstalledLibraryEntryByNameAndVersion(UcuModpackMod mod)
@@ -3750,7 +4941,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void InstallModArchives(
+    private async Task InstallModArchivesAsync(
         IReadOnlyList<string> archivePaths,
         IReadOnlyList<ModInstallOutcome>? initialOutcomes = null)
     {
@@ -3850,12 +5041,21 @@ public partial class MainWindow : Window
                 .Select(outcome => outcome.Result!.Manifest.Mod.Id)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
+            var importedModIds = outcomes
+                .Where(outcome => outcome.Result is not null)
+                .Select(outcome => outcome.Result!.Manifest.Mod.Id)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
 
             UpdateProgress(progress, "Refreshing mod list...");
             LoadMods();
             EnableInstalledModsInActiveProfile(newlyInstalledModIds);
+            var autoLinkSummary = importedModIds.Length == 0
+                ? null
+                : await AutoLinkImportedModsAsync(importedModIds, progress);
+            LoadMods();
             CloseProgress(progress);
-            ShowModInstallResults(outcomes, preUpdateCleanResults);
+            ShowModInstallResults(outcomes, preUpdateCleanResults, autoLinkSummary);
         }
         finally
         {
@@ -3902,50 +5102,123 @@ public partial class MainWindow : Window
     }
 
     private async Task<IReadOnlyList<NexusUpdateCheckResult>> CheckNexusUpdatesAsync(
-        IReadOnlyList<ModLibraryEntry> checkableEntries)
+        IReadOnlyList<ModLibraryEntry> checkableEntries,
+        bool forceMetadataRefresh = true)
     {
-        foreach (var row in _mods.Where(mod => mod.CanCheckUpdates))
+        var checkedModIds = checkableEntries
+            .Select(entry => entry.Mod.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in _mods.Where(mod => checkedModIds.Contains(mod.Id)))
         {
             row.UpdateStatus = "Checking...";
         }
 
         ModsListView.Items.Refresh();
 
-        var catalogLoad = await _nexusMetadataCatalogService.LoadAsync(_managerPaths, forceRefresh: true);
+        var catalogLoad = await _nexusMetadataCatalogService.LoadAsync(
+            _managerPaths,
+            forceRefresh: forceMetadataRefresh);
         RefreshNexusMetadataStatusText(catalogLoad.Status);
-        var results = new List<NexusUpdateCheckResult>();
-        var manifestsByModId = new Dictionary<string, ModManifest>(StringComparer.OrdinalIgnoreCase);
         var progressDialog = OwnedWindows.OfType<VirtualLaunchProgressDialog>()
             .FirstOrDefault(window => window.Title is "Check Updates" or "Update Mods");
-        var processed = 0;
-        foreach (var entry in checkableEntries)
+        IProgress<(int Processed, int Total, string ModName)> progress =
+            new Progress<(int Processed, int Total, string ModName)>(state =>
+            UpdateProgress(progressDialog, $"Checking {state.Processed}/{state.Total}: {state.ModName}"));
+        var batch = await Task.Run(() =>
         {
-            processed++;
-            UpdateProgress(progressDialog, $"Checking {processed}/{checkableEntries.Count}: {entry.Mod.Name}");
-            var match = _nexusMetadataMatcher.FindBestMatch(entry, catalogLoad.Entries);
-            var (result, manifest) = match is null
-                ? (new NexusUpdateCheckResult(
-                    entry.Mod.Id,
-                    "Metadata missing",
-                    false,
-                    null,
-                    null,
-                    "The linked mod was not found in the metadata catalog.",
-                    entry.Manifest.Source?.GameDomain,
-                    entry.Manifest.Source?.ModId),
-                    entry.Manifest)
-                : CheckNexusUpdateWithMetadata(entry, match.Entry);
-            results.Add(result);
-            manifestsByModId[entry.Mod.Id] = manifest;
-            PersistNexusUpdateCheck(entry, result, manifest);
+            var results = new List<NexusUpdateCheckResult>();
+            var manifestsByModId = new Dictionary<string, ModManifest>(StringComparer.OrdinalIgnoreCase);
+            var processed = 0;
+            foreach (var entry in checkableEntries)
+            {
+                processed++;
+                progress.Report((processed, checkableEntries.Count, entry.Mod.Name));
+                var match = _nexusMetadataMatcher.FindBestMatch(entry, catalogLoad.Entries);
+                var (result, manifest) = match is null
+                    ? (new NexusUpdateCheckResult(
+                        entry.Mod.Id,
+                        "Metadata missing",
+                        false,
+                        null,
+                        null,
+                        "The linked mod was not found in the metadata catalog.",
+                        entry.Manifest.Source?.GameDomain,
+                        entry.Manifest.Source?.ModId),
+                        entry.Manifest)
+                    : CheckNexusUpdateWithMetadata(entry, match.Entry);
+                results.Add(result);
+                manifestsByModId[entry.Mod.Id] = manifest;
+                PersistNexusUpdateCheck(entry, result, manifest);
+            }
+
+            return (
+                Results: (IReadOnlyList<NexusUpdateCheckResult>)results,
+                ManifestsByModId: (IReadOnlyDictionary<string, ModManifest>)manifestsByModId);
+        });
+
+        foreach (var result in batch.Results)
+        {
             ApplyUpdateResultToRow(result);
         }
 
         ModsListView.Items.Refresh();
-        return ConfirmNexusUpdateResultsWithFiles(checkableEntries, results, manifestsByModId);
+        var confirmedResults = await ConfirmNexusUpdateResultsWithFilesAsync(
+            checkableEntries,
+            batch.Results,
+            batch.ManifestsByModId);
+        if (NexusBrowserView.Visibility == Visibility.Visible)
+        {
+            ApplyNexusCatalogFilter();
+        }
+
+        return confirmedResults;
     }
 
-    private IReadOnlyList<NexusUpdateCheckResult> ConfirmNexusUpdateResultsWithFiles(
+    private async Task ResolveStartupNexusUpdateStatusesAsync()
+    {
+        var pendingModIds = _mods
+            .Where(mod => mod.CanCheckUpdates)
+            .Where(mod => mod.UpdateStatus.Equals("Check needed", StringComparison.OrdinalIgnoreCase))
+            .Select(mod => mod.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (pendingModIds.Count == 0)
+        {
+            return;
+        }
+
+        var entries = _libraryEntries
+            .Where(entry => pendingModIds.Contains(entry.Mod.Id))
+            .ToArray();
+        if (entries.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await CheckNexusUpdatesAsync(entries, forceMetadataRefresh: false);
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            or TaskCanceledException
+            or JsonException
+            or IOException
+            or InvalidDataException
+            or InvalidOperationException
+            or UnauthorizedAccessException)
+        {
+            foreach (var row in _mods.Where(mod => pendingModIds.Contains(mod.Id)))
+            {
+                if (row.UpdateStatus is "Checking..." or "Verifying files...")
+                {
+                    row.UpdateStatus = "Check needed";
+                }
+            }
+
+            ModsListView.Items.Refresh();
+        }
+    }
+
+    private async Task<IReadOnlyList<NexusUpdateCheckResult>> ConfirmNexusUpdateResultsWithFilesAsync(
         IReadOnlyList<ModLibraryEntry> entries,
         IReadOnlyList<NexusUpdateCheckResult> results,
         IReadOnlyDictionary<string, ModManifest> manifestsByModId)
@@ -3968,8 +5241,40 @@ public partial class MainWindow : Window
 
         var confirmedResults = results.ToArray();
         var cached = 0;
+        var refreshed = 0;
         var failed = 0;
+        var apiFailures = 0;
         var corrected = 0;
+        var oauthOptions = NexusOAuthAppConfiguration.CreateOptions();
+        var canRefreshFromApi = oauthOptions.IsConfigured && _nexusOAuthTokenProvider.HasStoredTokens;
+        if (canRefreshFromApi)
+        {
+            try
+            {
+                _nexusOAuthContext = await _nexusOAuthTokenProvider.GetAccessContextAsync(oauthOptions);
+                _nexusOAuthStatusMessage = null;
+                RefreshNexusAccountStatus();
+            }
+            catch (NexusOAuthAuthenticationRequiredException exception)
+            {
+                _nexusOAuthContext = null;
+                _nexusOAuthStatusMessage = exception.Message;
+                canRefreshFromApi = false;
+                apiFailures++;
+                RefreshNexusAccountStatus();
+            }
+            catch (Exception exception) when (exception is HttpRequestException
+                or OperationCanceledException
+                or JsonException
+                or IOException
+                or InvalidOperationException
+                or UnauthorizedAccessException)
+            {
+                canRefreshFromApi = false;
+                apiFailures++;
+            }
+        }
+
         foreach (var result in candidates)
         {
             if (!entriesById.TryGetValue(result.ModId, out var entry))
@@ -4002,7 +5307,52 @@ public partial class MainWindow : Window
                 {
                     cached++;
                 }
-                else
+
+                if (filesResult is null && canRefreshFromApi)
+                {
+                    try
+                    {
+                        filesResult = await _nexusModFilesService.LoadOrRefreshAsync(
+                            _managerPaths,
+                            result.GameDomain!,
+                            result.NexusModId!.Value,
+                            fingerprint,
+                            cancellationToken => _nexusModsApiClient.GetModFilesAsync(
+                                result.GameDomain!,
+                                result.NexusModId.Value,
+                                _nexusOAuthTokenProvider,
+                                oauthOptions,
+                                cancellationToken));
+                        refreshed++;
+                    }
+                    catch (NexusOAuthAuthenticationRequiredException exception)
+                    {
+                        _nexusOAuthContext = null;
+                        _nexusOAuthStatusMessage = exception.Message;
+                        canRefreshFromApi = false;
+                        apiFailures++;
+                        RefreshNexusAccountStatus();
+                    }
+                    catch (NexusModsApiException exception)
+                    {
+                        apiFailures++;
+                        if (exception.ShouldPauseRequests)
+                        {
+                            canRefreshFromApi = false;
+                        }
+                    }
+                    catch (Exception exception) when (exception is HttpRequestException
+                        or OperationCanceledException
+                        or JsonException
+                        or IOException
+                        or UnauthorizedAccessException)
+                    {
+                        apiFailures++;
+                        canRefreshFromApi = false;
+                    }
+                }
+
+                if (filesResult is null)
                 {
                     filesResult = TryLoadCompatibleCachedFiles(result);
                     if (filesResult is null)
@@ -4077,7 +5427,9 @@ public partial class MainWindow : Window
             }
         }
 
-        _lastNexusFilesCacheSummary = $"Nexus files: {corrected} corrected, {cached} reused from cache, {failed} skipped. API refresh disabled.";
+        _lastNexusFilesCacheSummary =
+            $"Nexus files: {corrected} corrected, {refreshed} refreshed, {cached} reused from cache, {failed} skipped" +
+            (apiFailures > 0 ? $", {apiFailures} API error(s)." : ".");
         ShowSelectedMod(ModsListView.SelectedItem as ModRow);
         ModsListView.Items.Refresh();
         return confirmedResults;
@@ -4203,8 +5555,170 @@ public partial class MainWindow : Window
         }
 
         lines.Add(string.Empty);
-        lines.Add("The metadata catalog provides Nexus pages and file ids. Download the archives manually, then use Install Mods.");
+        lines.Add(_nexusOAuthContext is null
+            ? "Connect a Nexus Premium account for automatic downloads. Otherwise, download the archives manually and use Install Mods."
+            : "Automatic downloads require Nexus Premium. Open the file pages, download the archives manually, then use Install Mods.");
         return string.Join("\n", lines);
+    }
+
+    private string BuildAutomaticUpdatePrompt(IReadOnlyList<NexusUpdateCheckResult> updates)
+    {
+        var lines = new List<string>
+        {
+            $"Download and install {updates.Count} Nexus update(s)?",
+            string.Empty
+        };
+        lines.AddRange(updates
+            .Select(result => $"{GetModName(result.ModId)}: {result.LatestVersion ?? result.LatestFileName ?? "latest"}")
+            .Take(10));
+        if (updates.Count > 10)
+        {
+            lines.Add($"... {updates.Count - 10} more");
+        }
+
+        lines.Add(string.Empty);
+        lines.Add("Yes: download and install automatically with Nexus Premium.");
+        lines.Add("No: open Nexus file pages for manual download.");
+        lines.Add("Cancel: leave the current installation unchanged.");
+        return string.Join("\n", lines);
+    }
+
+    private async Task DownloadAndInstallNexusUpdatesAsync(IReadOnlyList<NexusUpdateCheckResult> updates)
+    {
+        VirtualLaunchProgressDialog? progress = null;
+        var downloadedArchives = new List<string>();
+        var failed = new List<(NexusUpdateCheckResult Update, string Error)>();
+        try
+        {
+            _isNexusDownloadBusy = true;
+            RefreshNexusCatalogActionState();
+            var access = await GetPremiumNexusAccessAsync();
+            progress = ShowProgress("Update Mods", "Downloading Nexus updates", "Preparing downloads...");
+
+            for (var index = 0; index < updates.Count; index++)
+            {
+                var update = updates[index];
+                try
+                {
+                    UpdateProgress(progress, $"Preparing {index + 1}/{updates.Count}: {GetModName(update.ModId)}");
+                    var archive = await DownloadNexusUpdateArchiveAsync(update, access, progress, index + 1, updates.Count);
+                    downloadedArchives.Add(archive.ArchivePath);
+                }
+                catch (Exception exception) when (exception is NexusModsApiException
+                    or HttpRequestException
+                    or OperationCanceledException
+                    or JsonException
+                    or IOException
+                    or InvalidOperationException
+                    or UnauthorizedAccessException)
+                {
+                    failed.Add((update, exception.Message));
+                    if (exception is NexusModsApiException { ShouldPauseRequests: true })
+                    {
+                        foreach (var remaining in updates.Skip(index + 1))
+                        {
+                            failed.Add((remaining, "Skipped after Nexus rejected the download request."));
+                        }
+
+                        break;
+                    }
+                }
+            }
+        }
+        catch (NexusOAuthAuthenticationRequiredException exception)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = exception.Message;
+            RefreshNexusAccountStatus();
+            MessageBox.Show(this, exception.Message, "Nexus account required", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        finally
+        {
+            CloseProgress(progress);
+            _isNexusDownloadBusy = false;
+            RefreshNexusCatalogActionState();
+        }
+
+        if (downloadedArchives.Count > 0)
+        {
+            await InstallModArchivesAsync(downloadedArchives);
+        }
+
+        if (failed.Count == 0)
+        {
+            return;
+        }
+
+        var lines = new List<string>
+        {
+            $"Automatic download failed for {failed.Count} update(s):",
+            string.Empty
+        };
+        lines.AddRange(failed.Take(8).Select(item => $"{GetModName(item.Update.ModId)}: {item.Error}"));
+        if (failed.Count > 8)
+        {
+            lines.Add($"... {failed.Count - 8} more");
+        }
+
+        lines.Add(string.Empty);
+        lines.Add("Open the failed mods on Nexus for manual download?");
+        var answer = MessageBox.Show(
+            this,
+            string.Join("\n", lines),
+            "Some updates need manual download",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (answer == MessageBoxResult.Yes)
+        {
+            OpenManualUpdatePages(failed.Select(item => item.Update).ToArray());
+        }
+    }
+
+    private async Task<NexusModDownloadResult> DownloadNexusUpdateArchiveAsync(
+        NexusUpdateCheckResult update,
+        NexusOAuthAccessContext access,
+        VirtualLaunchProgressDialog? progress,
+        int updateNumber,
+        int updateCount)
+    {
+        if (string.IsNullOrWhiteSpace(update.GameDomain) || update.NexusModId is null)
+        {
+            throw new InvalidOperationException("The update does not contain a valid Nexus mod reference.");
+        }
+
+        var fileId = update.LatestFileId;
+        var fileName = update.LatestFileName;
+        if (fileId is null)
+        {
+            var files = await _nexusModsApiClient.GetModFilesAsync(
+                update.GameDomain,
+                update.NexusModId.Value,
+                access.Tokens.AccessToken);
+            var entry = _libraryEntries.FirstOrDefault(item =>
+                item.Mod.Id.Equals(update.ModId, StringComparison.OrdinalIgnoreCase));
+            var latestFile = entry is null
+                ? ChooseLatestUpdateFile(files)
+                : ChooseLatestUpdateFileForManifest(entry.Manifest, files);
+            fileId = latestFile?.FileId;
+            fileName = latestFile?.FileName ?? fileName;
+        }
+
+        if (fileId is null)
+        {
+            throw new InvalidOperationException("Nexus did not identify a downloadable update file.");
+        }
+
+        var downloadProgress = new Progress<NexusModDownloadProgress>(state =>
+            UpdateProgress(progress, $"{updateNumber}/{updateCount} {GetModName(update.ModId)}: {state.Status}"));
+        return await _nexusModDownloadService.DownloadAsync(
+            update.GameDomain,
+            update.NexusModId.Value,
+            fileId.Value,
+            access.Tokens.AccessToken,
+            _managerPaths.DownloadsPath,
+            fileName,
+            downloadProgress);
     }
 
     private void OpenManualUpdatePages(IReadOnlyList<NexusUpdateCheckResult> updates)
@@ -4244,7 +5758,7 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(
                 this,
-                $"Could not open the Nexus page automatically.\n\n{uri}\n\n{exception.Message}",
+                $"Could not open the page automatically.\n\n{uri}\n\n{exception.Message}",
                 title,
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
@@ -4926,7 +6440,8 @@ public partial class MainWindow : Window
 
     private void ShowModInstallResults(
         IReadOnlyList<ModInstallOutcome> outcomes,
-        IReadOnlyList<ProfileDeployResult>? preUpdateCleanResults = null)
+        IReadOnlyList<ProfileDeployResult>? preUpdateCleanResults = null,
+        NexusAutoLinkSummary? autoLinkSummary = null)
     {
         var installedCount = outcomes.Count(outcome => outcome.Result?.Action == ModImportAction.Installed);
         var updatedCount = outcomes.Count(outcome => outcome.Result?.Action == ModImportAction.Updated);
@@ -4959,6 +6474,14 @@ public partial class MainWindow : Window
             $"Cleaned before update: {cleanedFiles}",
             $"Archive warnings: {warningCount}"
         };
+        if (autoLinkSummary is not null)
+        {
+            var nexusReady = autoLinkSummary.Linked
+                + autoLinkSummary.Completed
+                + autoLinkSummary.Repaired
+                + autoLinkSummary.AlreadyLinked;
+            lines.Add($"Nexus links: {nexusReady} ready, {autoLinkSummary.Skipped} not matched");
+        }
 
         var detailLines = outcomes
             .Where(outcome => outcome.Result is not null)
@@ -5123,10 +6646,11 @@ public partial class MainWindow : Window
             _isLoading = false;
         }
 
-        RefreshProfileSummary();
+        var overlayPreview = BuildCurrentOverlayPreview();
+        RefreshProfileSummary(overlayPreview);
         RefreshProfilePageStatus();
         RefreshDeployStatus();
-        RefreshSettingsStatus();
+        RefreshSettingsStatus(overlayPreview);
         UpdateToggleAllModsButton();
         ModsListView.SelectedIndex = _mods.Count > 0 ? 0 : -1;
         if (_mods.Count == 0)
@@ -5137,6 +6661,11 @@ public partial class MainWindow : Window
         if (ModpacksView.Visibility == Visibility.Visible)
         {
             RefreshModpacksView();
+        }
+
+        if (NexusBrowserView.Visibility == Visibility.Visible)
+        {
+            ApplyNexusCatalogFilter();
         }
     }
 
@@ -5301,7 +6830,7 @@ public partial class MainWindow : Window
         };
     }
 
-    private void RefreshProfileSummary()
+    private void RefreshProfileSummary(OverlayPreview? overlayPreview = null)
     {
         if (_currentProfile is null)
         {
@@ -5322,7 +6851,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var overlayPreview = BuildCurrentOverlayPreview();
+        overlayPreview ??= BuildCurrentOverlayPreview();
         if (overlayPreview is null)
         {
             WarningSummaryText.Text = "Overlay unavailable";
@@ -5356,7 +6885,7 @@ public partial class MainWindow : Window
             .Select(OverlayRow.FromEntry)
             .ToArray();
         RefreshDeployStatus();
-        RefreshVirtualLaunchStatus();
+        RefreshVirtualLaunchStatus(overlayPreview);
     }
 
     private string BuildActiveProfileDeployText(string activeProfileId)
@@ -5430,8 +6959,9 @@ public partial class MainWindow : Window
         if (selectedMod is null)
         {
             SelectedModNameText.Text = "No mod selected";
+            SelectedModVersionText.Text = "-";
             SelectedModIdText.Text = string.Empty;
-            SelectedModAuthorText.Text = string.Empty;
+            SelectedModAuthorText.Text = "-";
             OpenSelectedModNexusButton.IsEnabled = false;
             OpenSelectedModNexusButton.ToolTip = null;
             SelectedModImage.Source = null;
@@ -5439,7 +6969,10 @@ public partial class MainWindow : Window
             SelectedNexusVersionText.Text = string.Empty;
             SelectedNexusDownloadsText.Text = string.Empty;
             SelectedNexusStatsText.Text = string.Empty;
-            SelectedNexusDescriptionText.Text = string.Empty;
+            SetFormattedNexusDescription(
+                SelectedModDescriptionViewer,
+                null,
+                "Select a mod to view its description.");
             ResetSelectedNexusFiles("Select a Nexus-linked mod to see available files.");
             SelectedFileCountText.Text = "0";
             SelectedPluginCountText.Text = "0";
@@ -5451,10 +6984,13 @@ public partial class MainWindow : Window
         }
 
         SelectedModNameText.Text = selectedMod.DisplayName;
-        SelectedModIdText.Text = $"{selectedMod.Id} - version {selectedMod.Version} - {selectedMod.SourceStatus} - {(selectedMod.IsEnabled ? "enabled" : "disabled")} - order {selectedMod.Priority}";
+        SelectedModVersionText.Text = string.IsNullOrWhiteSpace(selectedMod.Version)
+            ? "unknown"
+            : selectedMod.Version;
         SelectedModAuthorText.Text = string.IsNullOrWhiteSpace(selectedMod.Author)
-            ? string.Empty
-            : $"Author: {selectedMod.Author}";
+            ? "unknown"
+            : selectedMod.Author;
+        SelectedModIdText.Text = $"ID: {selectedMod.Id} | Source: {selectedMod.SourceStatus} | State: {(selectedMod.IsEnabled ? "enabled" : "disabled")} | Order: {selectedMod.Priority}";
         OpenSelectedModNexusButton.IsEnabled = !string.IsNullOrWhiteSpace(selectedMod.PageUrl);
         OpenSelectedModNexusButton.ToolTip = string.IsNullOrWhiteSpace(selectedMod.PageUrl)
             ? "This mod is not linked to Nexus."
@@ -5465,7 +7001,10 @@ public partial class MainWindow : Window
             : selectedMod.NexusVersion;
         SelectedNexusDownloadsText.Text = FormatNullableCount(selectedMod.TotalDownloads);
         SelectedNexusStatsText.Text = BuildNexusStatsText(selectedMod);
-        SelectedNexusDescriptionText.Text = CleanNexusDescription(selectedMod.Description);
+        SetFormattedNexusDescription(
+            SelectedModDescriptionViewer,
+            selectedMod.Description,
+            "No description is available for this mod.");
         ShowSelectedNexusFiles(selectedMod);
         SelectedFileCountText.Text = selectedMod.FileCount.ToString();
         SelectedPluginCountText.Text = selectedMod.PluginCount.ToString();
@@ -5488,6 +7027,7 @@ public partial class MainWindow : Window
         }
 
         OpenSelectedModFilesPageButton.IsEnabled = true;
+        RefreshSelectedNexusFileActionState(NexusOAuthAppConfiguration.CreateOptions());
 
         var fingerprint = BuildNexusFilesFingerprint(selectedMod);
         var cached = _nexusModFilesService.TryLoadCached(
@@ -5518,7 +7058,89 @@ public partial class MainWindow : Window
     {
         NexusFilesListView.ItemsSource = Array.Empty<NexusFileRow>();
         SelectedNexusFilesStatusText.Text = statusText;
+        RefreshSelectedModFilesButton.IsEnabled = false;
         OpenSelectedModFilesPageButton.IsEnabled = false;
+    }
+
+    private void RefreshSelectedNexusFileActionState(NexusOAuthOptions options)
+    {
+        var selectedMod = ModsListView.SelectedItem as ModRow;
+        var hasLinkedMod = selectedMod is not null && CanUseNexusFiles(selectedMod);
+        RefreshSelectedModFilesButton.IsEnabled = hasLinkedMod
+            && options.IsConfigured
+            && _nexusOAuthContext is not null
+            && !_isNexusOAuthBusy;
+        RefreshSelectedModFilesButton.ToolTip = !hasLinkedMod
+            ? "Select a Nexus-linked mod first."
+            : !options.IsConfigured
+                ? "Nexus OAuth registration is pending."
+                : _nexusOAuthContext is null
+                    ? "Connect your Nexus account in Settings first."
+                    : _isNexusOAuthBusy
+                        ? "Wait for the current Nexus account action to finish."
+                        : "Refresh the file list through the connected Nexus account.";
+    }
+
+    private async void RefreshSelectedModFiles_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryGetSelectedNexusMod(out var selectedMod) || _isNexusOAuthBusy)
+        {
+            return;
+        }
+
+        var options = NexusOAuthAppConfiguration.CreateOptions();
+        if (!options.IsConfigured || _nexusOAuthContext is null)
+        {
+            MessageBox.Show(
+                this,
+                "Connect your Nexus account in Settings before refreshing the file list.",
+                "Nexus account required",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        VirtualLaunchProgressDialog? progress = null;
+        try
+        {
+            RefreshSelectedModFilesButton.IsEnabled = false;
+            progress = ShowProgress("Nexus Files", "Refreshing Nexus files", selectedMod.DisplayName);
+            var fingerprint = BuildNexusFilesFingerprint(selectedMod);
+            var result = await _nexusModFilesService.LoadOrRefreshAsync(
+                _managerPaths,
+                selectedMod.GameDomain,
+                selectedMod.NexusModId!.Value,
+                fingerprint,
+                cancellationToken => _nexusModsApiClient.GetModFilesAsync(
+                    selectedMod.GameDomain,
+                    selectedMod.NexusModId.Value,
+                    _nexusOAuthTokenProvider,
+                    options,
+                    cancellationToken),
+                forceRefresh: true);
+            ShowNexusFilesResult(result);
+        }
+        catch (NexusOAuthAuthenticationRequiredException exception)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = exception.Message;
+            RefreshNexusAccountStatus();
+            MessageBox.Show(this, exception.Message, "Nexus account required", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception exception) when (exception is NexusModsApiException
+            or HttpRequestException
+            or OperationCanceledException
+            or JsonException
+            or IOException
+            or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, exception.Message, "Refresh Nexus files failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            CloseProgress(progress);
+            RefreshSelectedNexusFileActionState(options);
+        }
     }
 
     private void OpenSelectedModFilesPage_Click(object sender, RoutedEventArgs e)
@@ -5621,12 +7243,15 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<BitmapImage?> DownloadBitmapImageAsync(Uri uri)
+    private async Task<BitmapImage?> DownloadBitmapImageAsync(
+        Uri uri,
+        int? decodePixelWidth = null,
+        CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.UserAgent.Add(new ProductInfoHeaderValue("UCU-ModManager", "0.1"));
         using var response = await _imageHttpClient
-            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead)
+            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
             .ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
@@ -5636,11 +7261,11 @@ public partial class MainWindow : Window
             return null;
         }
 
-        await using var source = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+        await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         using var memory = contentLength is > 0 and <= MaxImageDownloadBytes
             ? new MemoryStream((int)contentLength.Value)
             : new MemoryStream();
-        await CopyImageStreamToMemoryAsync(source, memory).ConfigureAwait(false);
+        await CopyImageStreamToMemoryAsync(source, memory, cancellationToken).ConfigureAwait(false);
         memory.Position = 0;
 
         var image = new BitmapImage();
@@ -5648,17 +7273,24 @@ public partial class MainWindow : Window
         image.StreamSource = memory;
         image.CacheOption = BitmapCacheOption.OnLoad;
         image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+        if (decodePixelWidth is > 0)
+        {
+            image.DecodePixelWidth = decodePixelWidth.Value;
+        }
         image.EndInit();
         image.Freeze();
         return image;
     }
 
-    private static async Task CopyImageStreamToMemoryAsync(Stream source, MemoryStream destination)
+    private static async Task CopyImageStreamToMemoryAsync(
+        Stream source,
+        MemoryStream destination,
+        CancellationToken cancellationToken)
     {
         var buffer = new byte[ImageDownloadBufferSize];
         while (true)
         {
-            var read = await source.ReadAsync(buffer).ConfigureAwait(false);
+            var read = await source.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
             if (read == 0)
             {
                 return;
@@ -5669,7 +7301,7 @@ public partial class MainWindow : Window
                 throw new InvalidDataException("Image download exceeded the allowed size.");
             }
 
-            await destination.WriteAsync(buffer.AsMemory(0, read)).ConfigureAwait(false);
+            await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -5707,43 +7339,540 @@ public partial class MainWindow : Window
             : value.Value.ToString("N0");
     }
 
-    private static string CleanNexusDescription(string? description)
+    private void SetFormattedNexusDescription(
+        FlowDocumentScrollViewer target,
+        string? description,
+        string emptyMessage = "No Nexus description is available.")
+    {
+        var document = new FlowDocument
+        {
+            PagePadding = new Thickness(0),
+            FontFamily = new FontFamily("Segoe UI"),
+            FontSize = 12,
+            Foreground = (Brush)FindResource("PrimaryTextBrush"),
+            Background = Brushes.Transparent
+        };
+
+        var markup = NormalizeNexusDescriptionMarkup(description, emptyMessage);
+        AddNexusDescriptionBlocks(document, markup);
+        target.Document = document;
+    }
+
+    private static string NormalizeNexusDescriptionMarkup(string? description, string emptyMessage)
     {
         if (string.IsNullOrWhiteSpace(description))
         {
-            return "No Nexus description is available.";
+            return emptyMessage;
         }
 
-        var text = WebUtility.HtmlDecode(description);
-        text = Regex.Replace(text, @"(?i)<br\s*/?>", "\n");
-        text = Regex.Replace(text, @"(?i)</p\s*>", "\n\n");
-        text = Regex.Replace(text, @"(?i)<[^>]+>", " ");
-        text = Regex.Replace(text, @"(?is)\[img\].*?\[/img\]", " ");
-        text = Regex.Replace(text, @"(?is)\[url=(?<url>[^\]]+)\](?<label>.*?)\[/url\]", "${label} (${url})");
-        text = Regex.Replace(text, @"(?is)\[/?(?:b|i|u|size|font|color|list|spoiler|heading|line|code)(?:=[^\]]*)?\]", " ");
-        text = Regex.Replace(text, @"(?is)\[\*\]|\[/\*\]", "- ");
+        var text = WebUtility.HtmlDecode(description).Replace("\r", string.Empty, StringComparison.Ordinal);
+        text = Regex.Replace(
+            text,
+            """(?is)<a\b[^>]*href\s*=\s*['"](?<url>https?://[^'"]+)['"][^>]*>(?<label>.*?)</a>""",
+            "[url=${url}]${label}[/url]");
+        text = Regex.Replace(text, @"(?is)<(?:strong|b)\b[^>]*>", "[b]");
+        text = Regex.Replace(text, @"(?is)</(?:strong|b)\s*>", "[/b]");
+        text = Regex.Replace(text, @"(?is)<(?:em|i)\b[^>]*>", "[i]");
+        text = Regex.Replace(text, @"(?is)</(?:em|i)\s*>", "[/i]");
+        text = Regex.Replace(text, @"(?is)<u\b[^>]*>", "[u]");
+        text = Regex.Replace(text, @"(?is)</u\s*>", "[/u]");
+        text = Regex.Replace(text, @"(?is)<center\b[^>]*>", "[center]");
+        text = Regex.Replace(text, @"(?is)</center\s*>", "[/center]");
+        text = Regex.Replace(text, @"(?is)<h[1-6]\b[^>]*>", "\n[heading]");
+        text = Regex.Replace(text, @"(?is)</h[1-6]\s*>", "[/heading]\n");
+        text = Regex.Replace(text, @"(?is)<li\b[^>]*>", "\n[*]");
+        text = Regex.Replace(text, @"(?is)</li\s*>", string.Empty);
+        text = Regex.Replace(text, @"(?is)<br\s*/?>", "\n");
+        text = Regex.Replace(text, @"(?is)</?(?:p|div|ul|ol)\b[^>]*>", "\n");
+        text = Regex.Replace(text, @"(?is)<img\b[^>]*>", string.Empty);
+        text = Regex.Replace(text, @"(?is)<[^>]+>", string.Empty);
+        text = Regex.Replace(text, @"(?is)\[img(?:\s+[^\]]*|=[^\]]*)?\].*?\[/img\]", string.Empty);
+        text = Regex.Replace(
+            text,
+            @"(?is)\[url\](?<url>https?://.*?)\[/url\]",
+            "[url=${url}]${url}[/url]");
+        text = Regex.Replace(text, @"(?is)\[line\]", "\n");
+        text = Regex.Replace(text, @"(?is)\[/?quote(?:=[^\]]*)?\]", "\n");
+        text = Regex.Replace(text, @"(?is)\[/?(?:size|font|color|spoiler|code)(?:=[^\]]*)?\]", string.Empty);
+        text = Regex.Replace(text, @"(?is)\[/?list(?:=[^\]]*)?\]", "\n");
+        text = Regex.Replace(text, @"(?is)\[\*\]", "\u2022 ");
+        text = Regex.Replace(text, @"(?is)\[/\*\]", string.Empty);
         text = Regex.Replace(text, @"[ \t]+\n", "\n");
         text = Regex.Replace(text, @"\n{3,}", "\n\n");
-        text = Regex.Replace(text, @"[ \t]{2,}", " ");
         return text.Trim();
     }
 
-    private void RefreshSettingsStatus()
+    private void AddNexusDescriptionBlocks(FlowDocument document, string markup)
+    {
+        var blockMatches = Regex.Matches(
+            markup,
+            @"(?is)\[(?<tag>center|left|right|heading)\](?<content>.*?)\[/\k<tag>\]");
+        var cursor = 0;
+        foreach (Match match in blockMatches)
+        {
+            AddNexusDescriptionParagraphs(document, markup[cursor..match.Index], TextAlignment.Left, false);
+            var tag = match.Groups["tag"].Value.ToLowerInvariant();
+            var alignment = tag switch
+            {
+                "center" => TextAlignment.Center,
+                "right" => TextAlignment.Right,
+                _ => TextAlignment.Left
+            };
+            AddNexusDescriptionParagraphs(
+                document,
+                match.Groups["content"].Value,
+                alignment,
+                tag == "heading");
+            cursor = match.Index + match.Length;
+        }
+
+        AddNexusDescriptionParagraphs(document, markup[cursor..], TextAlignment.Left, false);
+        if (document.Blocks.Count == 0)
+        {
+            document.Blocks.Add(new Paragraph(new Run("No Nexus description is available.")));
+        }
+    }
+
+    private void AddNexusDescriptionParagraphs(
+        FlowDocument document,
+        string markup,
+        TextAlignment alignment,
+        bool isHeading)
+    {
+        markup = Regex.Replace(markup, @"(?is)\[/?(?:center|left|right|heading)\]", string.Empty).Trim();
+        if (markup.Length == 0)
+        {
+            return;
+        }
+
+        foreach (var paragraphMarkup in Regex.Split(markup, @"\n\s*\n"))
+        {
+            var trimmed = paragraphMarkup.Trim();
+            if (trimmed.Length == 0)
+            {
+                continue;
+            }
+
+            var paragraph = new Paragraph
+            {
+                Margin = new Thickness(0, 0, 0, 8),
+                TextAlignment = alignment,
+                FontWeight = isHeading ? FontWeights.SemiBold : FontWeights.Normal,
+                FontSize = isHeading ? 15 : 12
+            };
+            AddNexusDescriptionInlines(paragraph.Inlines, trimmed);
+            document.Blocks.Add(paragraph);
+        }
+    }
+
+    private void AddNexusDescriptionInlines(InlineCollection root, string markup)
+    {
+        var stack = new Stack<(string Tag, InlineCollection Parent, bool ParentInsideLink)>();
+        var current = root;
+        var insideLink = false;
+        var cursor = 0;
+        foreach (Match match in Regex.Matches(
+            markup,
+            @"(?is)\[(?<close>/)?(?<tag>b|i|u|url)(?:=(?<arg>[^\]]+))?\]"))
+        {
+            if (match.Index > cursor)
+            {
+                AddLinkifiedRuns(current, markup[cursor..match.Index], !insideLink);
+            }
+
+            var tag = match.Groups["tag"].Value.ToLowerInvariant();
+            var isClosing = match.Groups["close"].Success;
+            if (!isClosing)
+            {
+                var inline = CreateNexusDescriptionInline(tag, match.Groups["arg"].Value);
+                current.Add(inline);
+                stack.Push((tag, current, insideLink));
+                current = inline.Inlines;
+                insideLink = insideLink || inline is Hyperlink;
+            }
+            else if (stack.Count > 0 && stack.Peek().Tag == tag)
+            {
+                var parent = stack.Pop();
+                current = parent.Parent;
+                insideLink = parent.ParentInsideLink;
+            }
+
+            cursor = match.Index + match.Length;
+        }
+
+        if (cursor < markup.Length)
+        {
+            AddLinkifiedRuns(current, markup[cursor..], !insideLink);
+        }
+    }
+
+    private Span CreateNexusDescriptionInline(string tag, string argument)
+    {
+        if (tag == "url"
+            && Uri.TryCreate(argument.Trim(' ', '\'', '"'), UriKind.Absolute, out var uri)
+            && (uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+                || uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)))
+        {
+            var hyperlink = new Hyperlink
+            {
+                NavigateUri = uri,
+                Foreground = (Brush)FindResource("AccentBrush"),
+                ToolTip = "Open link in browser"
+            };
+            hyperlink.RequestNavigate += NexusDescriptionLink_RequestNavigate;
+            return hyperlink;
+        }
+
+        return tag switch
+        {
+            "b" => new Bold(),
+            "i" => new Italic(),
+            "u" => new Span { TextDecorations = TextDecorations.Underline },
+            _ => new Span()
+        };
+    }
+
+    private void AddLinkifiedRuns(InlineCollection target, string text, bool allowLinks)
+    {
+        if (!allowLinks)
+        {
+            AddRunsWithLineBreaks(target, text);
+            return;
+        }
+
+        var cursor = 0;
+        foreach (Match match in Regex.Matches(
+            text,
+            """https?://[^\s<>\[\]'"]+""",
+            RegexOptions.IgnoreCase))
+        {
+            if (match.Index > cursor)
+            {
+                AddRunsWithLineBreaks(target, text[cursor..match.Index]);
+            }
+
+            var linkText = match.Value.TrimEnd('.', ',', ';', ':', ')');
+            var trailingText = match.Value[linkText.Length..];
+            if (Uri.TryCreate(linkText, UriKind.Absolute, out var uri))
+            {
+                var hyperlink = new Hyperlink(new Run(linkText))
+                {
+                    NavigateUri = uri,
+                    Foreground = (Brush)FindResource("AccentBrush"),
+                    ToolTip = "Open link in browser"
+                };
+                hyperlink.RequestNavigate += NexusDescriptionLink_RequestNavigate;
+                target.Add(hyperlink);
+            }
+            else
+            {
+                target.Add(new Run(linkText));
+            }
+
+            AddRunsWithLineBreaks(target, trailingText);
+            cursor = match.Index + match.Length;
+        }
+
+        if (cursor < text.Length)
+        {
+            AddRunsWithLineBreaks(target, text[cursor..]);
+        }
+    }
+
+    private static void AddRunsWithLineBreaks(InlineCollection target, string text)
+    {
+        var lines = text.Split('\n');
+        for (var index = 0; index < lines.Length; index++)
+        {
+            if (index > 0)
+            {
+                target.Add(new LineBreak());
+            }
+
+            if (lines[index].Length > 0)
+            {
+                target.Add(new Run(lines[index]));
+            }
+        }
+    }
+
+    private void NexusDescriptionLink_RequestNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        OpenUri(e.Uri.AbsoluteUri, "Open description link failed");
+        e.Handled = true;
+    }
+
+    private async Task RefreshNexusAccountAsync()
+    {
+        var options = NexusOAuthAppConfiguration.CreateOptions();
+        if (!options.IsConfigured || !_nexusOAuthTokenProvider.HasStoredTokens)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = null;
+            RefreshNexusAccountStatus();
+            return;
+        }
+
+        _isNexusOAuthBusy = true;
+        _nexusOAuthStatusMessage = "Checking saved authorization...";
+        RefreshNexusAccountStatus();
+        try
+        {
+            _nexusOAuthContext = await _nexusOAuthTokenProvider.GetAccessContextAsync(options);
+            _nexusOAuthStatusMessage = null;
+        }
+        catch (NexusOAuthAuthenticationRequiredException exception)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = exception.Message;
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            or OperationCanceledException
+            or IOException
+            or JsonException
+            or InvalidOperationException
+            or UnauthorizedAccessException)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = "Saved authorization could not be checked. Use Connect Nexus to try again.";
+        }
+        finally
+        {
+            _isNexusOAuthBusy = false;
+            RefreshNexusAccountStatus();
+        }
+    }
+
+    private void RefreshNexusAccountStatus()
+    {
+        var options = NexusOAuthAppConfiguration.CreateOptions();
+        var hasStoredTokens = _nexusOAuthTokenProvider.HasStoredTokens;
+        RefreshSelectedNexusFileActionState(options);
+        RefreshNexusCatalogActionState();
+        RefreshImportedModpackInstallActionState();
+
+        if (_isNexusOAuthBusy)
+        {
+            NexusAccountNameText.Text = _nexusOAuthContext?.Identity.Username ?? "Connecting Nexus account";
+            NexusAccountStatusText.Text = _nexusOAuthStatusMessage ?? "Waiting for secure authorization...";
+            NexusAccountStatusText.Foreground = (Brush)FindResource("AccentBrush");
+            ConnectNexusAccountButton.IsEnabled = false;
+            DisconnectNexusAccountButton.IsEnabled = false;
+            return;
+        }
+
+        if (_nexusOAuthContext is not null)
+        {
+            NexusAccountNameText.Text = _nexusOAuthContext.Identity.Username;
+            NexusAccountStatusText.Text = $"{BuildNexusMembershipText(_nexusOAuthContext.Identity)} - Connected securely";
+            NexusAccountStatusText.Foreground = (Brush)FindResource("AccentBrush");
+            ConnectNexusAccountButton.IsEnabled = false;
+            DisconnectNexusAccountButton.IsEnabled = true;
+            return;
+        }
+
+        if (!options.IsConfigured)
+        {
+            NexusAccountNameText.Text = "OAuth registration pending";
+            NexusAccountStatusText.Text = "Nexus metadata remains available. Account features will activate after app approval.";
+            NexusAccountStatusText.Foreground = (Brush)FindResource("MutedTextBrush");
+            ConnectNexusAccountButton.IsEnabled = false;
+            DisconnectNexusAccountButton.IsEnabled = hasStoredTokens;
+            return;
+        }
+
+        NexusAccountNameText.Text = "Not connected";
+        NexusAccountStatusText.Text = _nexusOAuthStatusMessage
+            ?? (hasStoredTokens
+                ? "Saved authorization needs to be checked again."
+                : "Connect your Nexus account to enable account-based API features.");
+        NexusAccountStatusText.Foreground = (Brush)FindResource(
+            string.IsNullOrWhiteSpace(_nexusOAuthStatusMessage) ? "MutedTextBrush" : "WarningBrush");
+        ConnectNexusAccountButton.IsEnabled = true;
+        DisconnectNexusAccountButton.IsEnabled = hasStoredTokens;
+    }
+
+    private static string BuildNexusMembershipText(NexusOAuthIdentity identity)
+    {
+        if (identity.MembershipRoles.Any(role =>
+                role.Equals("lifetimepremium", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "Lifetime Premium";
+        }
+
+        if (!identity.HasPremiumMembership())
+        {
+            return "Free account";
+        }
+
+        return identity.PremiumExpiry is not null && identity.PremiumExpiry > DateTimeOffset.UtcNow
+            ? $"Premium until {identity.PremiumExpiry.Value.ToLocalTime():yyyy-MM-dd}"
+            : "Premium account";
+    }
+
+    private async void ConnectNexusAccount_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isNexusOAuthBusy)
+        {
+            return;
+        }
+
+        var options = NexusOAuthAppConfiguration.CreateOptions();
+        if (!options.IsConfigured)
+        {
+            RefreshNexusAccountStatus();
+            return;
+        }
+
+        VirtualLaunchProgressDialog? progressDialog = null;
+        try
+        {
+            _isNexusOAuthBusy = true;
+            _nexusOAuthStatusMessage = "Opening secure Nexus sign-in...";
+            RefreshNexusAccountStatus();
+            progressDialog = ShowProgress(
+                "Nexus Account",
+                "Connecting Nexus account",
+                "Preparing secure sign-in...");
+            var progress = new Progress<string>(status =>
+            {
+                _nexusOAuthStatusMessage = status;
+                UpdateProgress(progressDialog, status);
+                RefreshNexusAccountStatus();
+            });
+
+            _nexusOAuthContext = await _nexusOAuthCoordinator.ConnectAsync(
+                options,
+                OpenNexusAuthorizationUriAsync,
+                progress);
+            _nexusOAuthStatusMessage = null;
+        }
+        catch (NexusOAuthException exception)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = exception.Message;
+            if (!string.Equals(exception.ErrorCode, "access_denied", StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show(this, exception.Message, "Nexus sign-in failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = "Nexus sign-in was cancelled.";
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            or TimeoutException
+            or IOException
+            or InvalidOperationException
+            or System.ComponentModel.Win32Exception
+            or UnauthorizedAccessException)
+        {
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = exception is TimeoutException
+                ? "Nexus sign-in timed out. Try connecting again."
+                : "Nexus sign-in could not be completed.";
+            MessageBox.Show(this, exception.Message, "Nexus sign-in failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _isNexusOAuthBusy = false;
+            CloseProgress(progressDialog);
+            RefreshNexusAccountStatus();
+        }
+    }
+
+    private void DisconnectNexusAccount_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isNexusOAuthBusy || (_nexusOAuthContext is null && !_nexusOAuthTokenProvider.HasStoredTokens))
+        {
+            return;
+        }
+
+        var answer = MessageBox.Show(
+            this,
+            "Disconnect the Nexus account from this device?\n\nThe locally stored authorization will be removed.",
+            "Disconnect Nexus account",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (answer != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _nexusOAuthTokenProvider.Disconnect();
+            _nexusOAuthContext = null;
+            _nexusOAuthStatusMessage = null;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _nexusOAuthStatusMessage = "The saved Nexus authorization could not be removed.";
+            MessageBox.Show(this, exception.Message, "Disconnect Nexus account failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
+        RefreshNexusAccountStatus();
+    }
+
+    private static Task OpenNexusAuthorizationUriAsync(Uri uri, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var process = Process.Start(new ProcessStartInfo(uri.ToString())
+        {
+            UseShellExecute = true
+        });
+        if (process is null)
+        {
+            throw new InvalidOperationException("Windows could not open the Nexus sign-in page.");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static byte[]? LoadNexusOAuthLogoBytes()
+    {
+        try
+        {
+            var resource = Application.GetResourceStream(
+                new Uri("pack://application:,,,/Assets/UCU.png", UriKind.Absolute));
+            if (resource is null)
+            {
+                return null;
+            }
+
+            using var stream = resource.Stream;
+            using var buffer = new MemoryStream();
+            stream.CopyTo(buffer);
+            return buffer.ToArray();
+        }
+        catch (Exception exception) when (exception is IOException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    private void RefreshSettingsStatus(OverlayPreview? overlayPreview = null)
     {
         _isLoadingSettings = true;
         try
         {
             AutoLinkNexusOnStartupCheckBox.IsChecked = _settings.AutoLinkNexusOnStartup;
+            CheckManagerUpdatesOnStartupCheckBox.IsChecked = _settings.CheckManagerUpdatesOnStartup;
             ShowAdvancedModColumnsCheckBox.IsChecked = _settings.ShowAdvancedModColumns;
+            NexusCatalogCompactModeCheckBox.IsChecked = _settings.NexusCatalogCompactMode;
             VirtualizationEnabledCheckBox.IsChecked = _settings.VirtualizationEnabled;
             ExperimentalVirtualizedLaunchCheckBox.IsEnabled = _settings.VirtualizationEnabled && _currentProfile is not null;
             ExperimentalVirtualizedLaunchCheckBox.IsChecked = _currentProfile?.Virtualization.UseExperimentalVirtualizedLaunch == true;
             RedirectVirtualWritesCheckBox.IsEnabled = _settings.VirtualizationEnabled && _currentProfile is not null;
             RedirectVirtualWritesCheckBox.IsChecked = _currentProfile?.Virtualization.RedirectWritesToProfileState ?? true;
             ApplyModTableColumnSettings();
+            ApplyNexusCatalogViewMode();
             NexusGameDomainTextBox.Text = _settings.NexusGameDomain;
+            RefreshNexusAccountStatus();
             RefreshNexusMetadataStatusText();
-            RefreshVirtualLaunchStatus();
+            RefreshManagerUpdateStatus();
+            RefreshVirtualLaunchStatus(overlayPreview);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -5759,7 +7888,16 @@ public partial class MainWindow : Window
     private void ApplyModTableColumnSettings()
     {
         var advancedWidth = _settings.ShowAdvancedModColumns;
+        AdvancedNexusLinkActionsPanel.Visibility = advancedWidth
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         AdvancedNexusDomainPanel.Visibility = advancedWidth
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        AdvancedManagerUpdatePanel.Visibility = advancedWidth
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        SelectedModIdText.Visibility = advancedWidth
             ? Visibility.Visible
             : Visibility.Collapsed;
         ModFilesColumn.Width = advancedWidth ? ModFilesColumnWidth : HiddenModColumnWidth;
@@ -5848,6 +7986,234 @@ public partial class MainWindow : Window
         return value is null
             ? "unknown"
             : value.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+    }
+
+    private async Task CheckManagerUpdatesOnStartupAsync()
+    {
+        if (!_settings.CheckManagerUpdatesOnStartup
+            || _settings.LastManagerUpdateCheckAt is not null
+            && DateTimeOffset.UtcNow - _settings.LastManagerUpdateCheckAt.Value < ManagerUpdateCheckInterval)
+        {
+            return;
+        }
+
+        await CheckManagerUpdatesAsync();
+    }
+
+    private async void CheckManagerUpdates_Click(object sender, RoutedEventArgs e)
+    {
+        await CheckManagerUpdatesAsync();
+    }
+
+    private async Task CheckManagerUpdatesAsync()
+    {
+        if (_isManagerUpdateCheckRunning)
+        {
+            return;
+        }
+
+        _isManagerUpdateCheckRunning = true;
+        _managerUpdateStatusMessage = "Checking GitHub Releases...";
+        RefreshManagerUpdateStatus();
+        var checkedAt = DateTimeOffset.UtcNow;
+        try
+        {
+            _managerUpdateResult = await _managerUpdateService.CheckAsync(
+                CurrentManagerVersion.ToString(),
+                _settings.IncludeManagerPrereleases);
+            checkedAt = _managerUpdateResult.CheckedAt;
+            _managerUpdateStatusMessage = null;
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            or TaskCanceledException
+            or JsonException
+            or FormatException
+            or InvalidOperationException)
+        {
+            _managerUpdateStatusMessage = $"Update check failed: {exception.Message}";
+        }
+        finally
+        {
+            _isManagerUpdateCheckRunning = false;
+            try
+            {
+                _settings = _settings with { LastManagerUpdateCheckAt = checkedAt };
+                _settingsService.Save(_managerPaths, _settings);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                _managerUpdateStatusMessage ??= $"Update status could not be saved: {exception.Message}";
+            }
+
+            RefreshManagerUpdateStatus();
+        }
+    }
+
+    private void ViewManagerUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        var release = _managerUpdateResult?.LatestRelease;
+        if (release is not null)
+        {
+            OpenUri(release.ReleasePageUri.ToString(), "Open manager release failed");
+        }
+    }
+
+    private async void DownloadManagerUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        var release = _managerUpdateResult?.LatestRelease;
+        if (release is null || _isManagerUpdateDownloadRunning)
+        {
+            return;
+        }
+
+        VirtualLaunchProgressDialog? progressDialog = null;
+        try
+        {
+            _isManagerUpdateDownloadRunning = true;
+            RefreshManagerUpdateStatus();
+            progressDialog = ShowProgress(
+                "Download Manager Update",
+                $"Downloading {release.Version}",
+                "Preparing verified GitHub download...");
+            IProgress<ManagerUpdateDownloadProgress> progress = new Progress<ManagerUpdateDownloadProgress>(state =>
+                UpdateProgress(progressDialog, $"Downloading update: {state.Percentage:F0}%"));
+            var destinationDirectory = Path.Combine(_managerPaths.DownloadsPath, "manager-updates");
+            var result = await _managerUpdateDownloadService.DownloadAsync(
+                release,
+                destinationDirectory,
+                progress);
+            CloseProgress(progressDialog);
+            progressDialog = null;
+
+            var answer = MessageBox.Show(
+                this,
+                $"UCU Mod Manager {release.Version} was downloaded and verified.\n\n{result.FilePath}\n\nOpen the download folder?",
+                "Manager update downloaded",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Information);
+            if (answer == MessageBoxResult.Yes)
+            {
+                using var process = Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{result.FilePath}\"")
+                {
+                    UseShellExecute = true
+                });
+            }
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            or TaskCanceledException
+            or IOException
+            or InvalidDataException
+            or UnauthorizedAccessException
+            or InvalidOperationException
+            or System.ComponentModel.Win32Exception)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "Manager update download failed",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        finally
+        {
+            CloseProgress(progressDialog);
+            _isManagerUpdateDownloadRunning = false;
+            RefreshManagerUpdateStatus();
+        }
+    }
+
+    private void RefreshManagerUpdateStatus()
+    {
+        CurrentManagerVersionText.Text = $"Current version {CurrentManagerVersion}";
+        CheckManagerUpdatesOnStartupCheckBox.IsChecked = _settings.CheckManagerUpdatesOnStartup;
+        var prereleasesRequired = CurrentManagerVersion.IsPrerelease;
+        IncludeManagerPrereleasesCheckBox.IsChecked = prereleasesRequired || _settings.IncludeManagerPrereleases;
+        IncludeManagerPrereleasesCheckBox.IsEnabled = !prereleasesRequired && !_isManagerUpdateCheckRunning;
+        CheckManagerUpdatesButton.IsEnabled = !_isManagerUpdateCheckRunning && !_isManagerUpdateDownloadRunning;
+
+        var release = _managerUpdateResult?.LatestRelease;
+        var updateAvailable = _managerUpdateResult?.IsUpdateAvailable == true && release is not null;
+        ViewManagerUpdateButton.IsEnabled = updateAvailable && !_isManagerUpdateCheckRunning;
+        DownloadManagerUpdateButton.IsEnabled = updateAvailable
+            && !_isManagerUpdateCheckRunning
+            && !_isManagerUpdateDownloadRunning;
+        ManagerUpdateBadgeButton.Visibility = updateAvailable ? Visibility.Visible : Visibility.Collapsed;
+        ManagerUpdateBadgeButton.Content = updateAvailable ? $"Update {release!.Version}" : "Update available";
+
+        if (_isManagerUpdateDownloadRunning)
+        {
+            SetStatus(ManagerUpdateStatusText, $"Downloading and verifying {release?.Version}...", "WarningBrush");
+        }
+        else if (_isManagerUpdateCheckRunning)
+        {
+            SetStatus(ManagerUpdateStatusText, "Checking published GitHub releases...", "MutedTextBrush");
+        }
+        else if (!string.IsNullOrWhiteSpace(_managerUpdateStatusMessage))
+        {
+            SetStatus(ManagerUpdateStatusText, _managerUpdateStatusMessage, "WarningBrush");
+        }
+        else if (updateAvailable)
+        {
+            var published = release!.PublishedAt is null
+                ? string.Empty
+                : $" Published {release.PublishedAt.Value.ToLocalTime():yyyy-MM-dd}.";
+            SetStatus(ManagerUpdateStatusText, $"Version {release.Version} is available.{published}", "AccentBrush");
+        }
+        else if (_settings.LastManagerUpdateCheckAt is not null)
+        {
+            SetStatus(
+                ManagerUpdateStatusText,
+                $"You have the latest compatible version. Last checked {FormatLocalDateTime(_settings.LastManagerUpdateCheckAt)}.",
+                "AccentBrush");
+        }
+        else
+        {
+            SetStatus(ManagerUpdateStatusText, "Update check has not run yet.", "MutedTextBrush");
+        }
+    }
+
+    private void CheckManagerUpdatesOnStartupCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isLoadingSettings)
+        {
+            return;
+        }
+
+        SaveManagerUpdatePreference(
+            _settings with
+            {
+                CheckManagerUpdatesOnStartup = CheckManagerUpdatesOnStartupCheckBox.IsChecked == true
+            });
+    }
+
+    private void IncludeManagerPrereleasesCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isLoadingSettings || CurrentManagerVersion.IsPrerelease)
+        {
+            return;
+        }
+
+        SaveManagerUpdatePreference(
+            _settings with
+            {
+                IncludeManagerPrereleases = IncludeManagerPrereleasesCheckBox.IsChecked == true,
+                LastManagerUpdateCheckAt = null
+            });
+    }
+
+    private void SaveManagerUpdatePreference(ManagerSettings settings)
+    {
+        try
+        {
+            _settings = settings;
+            _settingsService.Save(_managerPaths, _settings);
+            RefreshSettingsStatus();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, exception.Message, "Save settings failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            RefreshSettingsStatus();
+        }
     }
 
     private void AutoLinkNexusOnStartupCheckBox_Changed(object sender, RoutedEventArgs e)
@@ -6127,7 +8493,7 @@ public partial class MainWindow : Window
         return ("Vanilla", "AccentBrush");
     }
 
-    private void RefreshVirtualLaunchStatus()
+    private void RefreshVirtualLaunchStatus(OverlayPreview? overlayPreview = null)
     {
         SetVirtualLaunchButtonCleanupRisk(false);
         if (_currentProfile is null)
@@ -6174,7 +8540,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var overlayPreview = BuildCurrentOverlayPreview();
+        overlayPreview ??= BuildCurrentOverlayPreview();
         if (overlayPreview is null)
         {
             VirtualLaunchButton.IsEnabled = false;
@@ -6521,6 +8887,24 @@ public partial class MainWindow : Window
         AutoLinkStatusText.Foreground = (Brush)FindResource(brushResourceKey);
     }
 
+    private static SemanticVersion ResolveCurrentManagerVersion()
+    {
+        var assembly = typeof(MainWindow).Assembly;
+        var informationalVersion = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+        if (SemanticVersion.TryParse(informationalVersion, out var semanticVersion))
+        {
+            return semanticVersion;
+        }
+
+        var assemblyVersion = assembly.GetName().Version;
+        var fallback = assemblyVersion is null
+            ? "0.0.0"
+            : $"{assemblyVersion.Major}.{assemblyVersion.Minor}.{Math.Max(0, assemblyVersion.Build)}";
+        return SemanticVersion.Parse(fallback);
+    }
+
     private static ManagerPaths ResolveManagerPaths()
     {
         var applicationDirectory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -6837,25 +9221,91 @@ public partial class MainWindow : Window
         string Downloads,
         string Status,
         string NexusModIdText,
+        int? NexusModId,
+        long TotalDownloads,
+        long Endorsements,
+        long TotalViews,
+        bool IsInstalled,
+        bool HasUpdate,
         bool CanDownload,
         NexusMetadataCatalogEntry Entry)
     {
-        public static NexusCatalogRow FromEntry(NexusMetadataCatalogEntry entry, bool isInstalled)
+        public static NexusCatalogRow FromEntry(
+            NexusMetadataCatalogEntry entry,
+            bool isInstalled,
+            bool hasUpdate)
         {
             var downloadReference = entry.DownloadReference;
             var gameDomain = FirstNonEmpty(entry.NexusGameDomain, downloadReference?.GameDomain) ?? "unknown";
             var modId = entry.NexusModId ?? downloadReference?.ModId;
+            var totalDownloads = entry.Statistics?.TotalDownloads ?? 0;
             return new NexusCatalogRow(
                 $"{gameDomain}:{modId?.ToString() ?? entry.Id ?? entry.Name ?? "unknown"}",
                 string.IsNullOrWhiteSpace(entry.Name) ? "Unnamed mod" : entry.Name!,
                 GetKnownModVersion(entry.BestVersion) ?? entry.BestVersion ?? "unknown",
                 string.IsNullOrWhiteSpace(entry.Author) ? "unknown" : entry.Author!,
-                FormatNullableCount(entry.Statistics?.TotalDownloads),
-                isInstalled ? "Installed" : "Available",
+                FormatNullableCount(totalDownloads),
+                hasUpdate ? "Installed - Update available" : isInstalled ? "Installed - Latest" : "Not installed",
                 modId?.ToString() ?? "unknown",
+                modId,
+                totalDownloads,
+                entry.Statistics?.Endorsements ?? 0,
+                entry.Statistics?.TotalViews ?? 0,
+                isInstalled,
+                hasUpdate,
                 modId is not null && !string.IsNullOrWhiteSpace(gameDomain),
                 entry);
         }
+    }
+
+    private sealed class NexusCatalogTileRow : INotifyPropertyChanged
+    {
+        private ImageSource? _thumbnail;
+
+        public NexusCatalogTileRow(NexusCatalogRow catalogRow)
+        {
+            CatalogRow = catalogRow;
+        }
+
+        public NexusCatalogRow CatalogRow { get; }
+
+        public string CatalogId => CatalogRow.CatalogId;
+
+        public string Name => CatalogRow.Name;
+
+        public string Meta => $"{CatalogRow.Version} - {CatalogRow.Author}";
+
+        public string DownloadsLabel => $"{CatalogRow.Downloads} downloads";
+
+        public string Status => CatalogRow.HasUpdate
+            ? "Update available"
+            : CatalogRow.IsInstalled
+                ? "Installed"
+                : "Not installed";
+
+        public bool IsInstalled => CatalogRow.IsInstalled;
+
+        public bool HasUpdate => CatalogRow.HasUpdate;
+
+        public string? ThumbnailUrl => CatalogRow.Entry.Images.FirstOrDefault()
+            ?? CatalogRow.Entry.BestIconUrl;
+
+        public ImageSource? Thumbnail
+        {
+            get => _thumbnail;
+            set
+            {
+                if (ReferenceEquals(_thumbnail, value))
+                {
+                    return;
+                }
+
+                _thumbnail = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Thumbnail)));
+            }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
     }
 
     private sealed record UcuModpackModRow(

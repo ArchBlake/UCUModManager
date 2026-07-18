@@ -82,7 +82,7 @@ public sealed class VirtualizationIntroDialog : Window
             CornerRadius = new CornerRadius(5),
             Child = new TextBlock
             {
-                Text = "Important: use a clean game folder and install BepInEx first. The safest way is to install BepInEx through UCU ModManager.",
+                Text = "Important: use a clean game folder and install BepInEx first. The safest way is to install BepInEx through UCU Mod Manager.",
                 Foreground = Brush("#F2A33A"),
                 FontWeight = FontWeights.SemiBold,
                 TextWrapping = TextWrapping.Wrap,

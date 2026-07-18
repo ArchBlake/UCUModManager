@@ -63,6 +63,21 @@ public sealed class ManagerSettingsService
             normalized = normalized with { VirtualizationIntroShown = false };
         }
 
+        if (!HasJsonProperty(json, nameof(ManagerSettings.NexusCatalogCompactMode)))
+        {
+            normalized = normalized with { NexusCatalogCompactMode = false };
+        }
+
+        if (!HasJsonProperty(json, nameof(ManagerSettings.CheckManagerUpdatesOnStartup)))
+        {
+            normalized = normalized with { CheckManagerUpdatesOnStartup = true };
+        }
+
+        if (!HasJsonProperty(json, nameof(ManagerSettings.IncludeManagerPrereleases)))
+        {
+            normalized = normalized with { IncludeManagerPrereleases = false };
+        }
+
         return normalized;
     }
 

@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         mc:Ignorable="d"
-        Title="UCU ModManager"
+        Title="UCU Mod Manager"
         Icon="Assets/UCU.png"
         Height="840"
         Width="1440"
@@ -396,7 +396,7 @@
                         <Border x:Name="ItemBorder"
                                 Background="{TemplateBinding Background}"
                                 Padding="{TemplateBinding Padding}">
-                            <ContentPresenter />
+                            <ContentPresenter TextElement.Foreground="{TemplateBinding Foreground}" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsHighlighted" Value="True">
@@ -425,6 +425,7 @@
                         <Grid>
                             <ToggleButton x:Name="ToggleButton"
                                           Background="{TemplateBinding Background}"
+                                          Foreground="{TemplateBinding Foreground}"
                                           BorderBrush="{TemplateBinding BorderBrush}"
                                           BorderThickness="1"
                                           Focusable="False"
@@ -884,8 +885,9 @@
                             Background="{StaticResource AccentBrush}"
                             CornerRadius="2"
                             Margin="0,0,10,0" />
-                    <TextBlock Text="UCU ModManager" FontWeight="SemiBold" FontSize="14" />
-                    <TextBlock Text="Development Build · Alpha Public"
+                    <TextBlock Text="UCU Mod Manager" FontWeight="SemiBold" FontSize="14" />
+                        <TextBlock x:Name="TitleBarVersionText"
+                                   Text="Version"
                                Foreground="{StaticResource MutedTextBrush}"
                                FontSize="12"
                                VerticalAlignment="Center"
@@ -896,6 +898,12 @@
                             Orientation="Horizontal"
                             VerticalAlignment="Center"
                             shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <Button x:Name="ManagerUpdateBadgeButton"
+                            Content="Update available"
+                            Style="{StaticResource TitleBarTextButton}"
+                            Foreground="{StaticResource AccentBrush}"
+                            Visibility="Collapsed"
+                            Click="ManagerUpdateBadge_Click" />
                     <Button Content="About"
                             Style="{StaticResource TitleBarTextButton}"
                             Click="About_Click" />
@@ -1275,8 +1283,12 @@
                                        Margin="0,0,12,2"
                                        VerticalAlignment="Center" />
                             <WrapPanel Grid.Row="0" Grid.Column="1" HorizontalAlignment="Right">
-                                <Button Content="Link Nexus" Style="{StaticResource CompactSecondaryButton}" Click="LinkNexus_Click" />
-                                <Button x:Name="AutoLinkNexusButton" Content="Auto Link Nexus" Style="{StaticResource CompactSecondaryButton}" Click="AutoLinkNexus_Click" />
+                                <StackPanel x:Name="AdvancedNexusLinkActionsPanel"
+                                            Orientation="Horizontal"
+                                            Visibility="Collapsed">
+                                    <Button Content="Link Nexus" Style="{StaticResource CompactSecondaryButton}" Click="LinkNexus_Click" />
+                                    <Button x:Name="AutoLinkNexusButton" Content="Auto Link Nexus" Style="{StaticResource CompactSecondaryButton}" Click="AutoLinkNexus_Click" />
+                                </StackPanel>
                                 <Button Content="Move Up" Style="{StaticResource CompactSecondaryButton}" Click="MoveUp_Click" />
                                 <Button Content="Move Down" Style="{StaticResource CompactSecondaryButton}" Click="MoveDown_Click" />
                                 <Button Content="Remove Mod" Style="{StaticResource CompactSecondaryButton}" Click="RemoveSelectedMod_Click" />
@@ -1340,8 +1352,31 @@
                             </Border>
                             <StackPanel Grid.Column="1" Margin="0,0,12,0">
                                 <TextBlock x:Name="SelectedModNameText" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" TextWrapping="Wrap" />
-                                <TextBlock x:Name="SelectedModIdText" Style="{StaticResource MutedText}" TextWrapping="Wrap" />
-                                <TextBlock x:Name="SelectedModAuthorText" Style="{StaticResource MutedText}" TextWrapping="Wrap" />
+                                <WrapPanel Margin="0,3,0,0">
+                                    <TextBlock Text="Version" Style="{StaticResource MutedText}" VerticalAlignment="Center" />
+                                    <TextBlock x:Name="SelectedModVersionText"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource PrimaryTextBrush}"
+                                               Margin="6,0,12,0"
+                                               VerticalAlignment="Center" />
+                                    <Border Width="1"
+                                            Height="14"
+                                            Background="{StaticResource BorderBrushDark}"
+                                            Margin="0,1,12,0" />
+                                    <TextBlock Text="Author" Style="{StaticResource MutedText}" VerticalAlignment="Center" />
+                                    <TextBlock x:Name="SelectedModAuthorText"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource PrimaryTextBrush}"
+                                               Margin="6,0,0,0"
+                                               VerticalAlignment="Center" />
+                                </WrapPanel>
+                                <TextBlock x:Name="SelectedModIdText"
+                                           Style="{StaticResource MutedText}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,3,0,0"
+                                           Visibility="Collapsed" />
                             </StackPanel>
                             <Button x:Name="OpenSelectedModNexusButton"
                                     Grid.Column="2"
@@ -1377,6 +1412,15 @@
                         </Grid>
 
                         <TabControl Grid.Row="2">
+                            <TabItem Header="Description">
+                                <FlowDocumentScrollViewer x:Name="SelectedModDescriptionViewer"
+                                                          Margin="8"
+                                                          Background="Transparent"
+                                                          BorderThickness="0"
+                                                          HorizontalScrollBarVisibility="Disabled"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          IsToolBarVisible="False" />
+                            </TabItem>
                             <TabItem Header="Dependencies">
                                 <ListView x:Name="DependenciesListView">
                                     <ListView.View>
@@ -1412,7 +1456,10 @@
                                                 BorderThickness="1"
                                                 CornerRadius="6"
                                                 Margin="0,0,0,10">
-                                            <Image x:Name="SelectedModLargeImage" Stretch="UniformToFill" />
+                                            <Image x:Name="SelectedModLargeImage"
+                                                   Margin="6"
+                                                   Stretch="Uniform"
+                                                   RenderOptions.BitmapScalingMode="HighQuality" />
                                         </Border>
                                         <Grid Margin="0,0,0,8">
                                             <Grid.ColumnDefinitions>
@@ -1432,6 +1479,11 @@
                                         <DockPanel Margin="0,0,0,6" LastChildFill="False">
                                             <TextBlock Text="Files" Style="{StaticResource MutedText}" DockPanel.Dock="Left" VerticalAlignment="Center" />
                                             <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
+                                                <Button x:Name="RefreshSelectedModFilesButton"
+                                                        Content="Refresh Files"
+                                                        Style="{StaticResource SecondaryButton}"
+                                                        Click="RefreshSelectedModFiles_Click"
+                                                        ToolTip="Refresh the file list through the connected Nexus account." />
                                                 <Button x:Name="OpenSelectedModFilesPageButton"
                                                         Content="Open Files Page"
                                                         Style="{StaticResource SecondaryButton}"
@@ -1451,8 +1503,6 @@
                                                 </GridView>
                                             </ListView.View>
                                         </ListView>
-                                        <TextBlock Text="Description" Style="{StaticResource MutedText}" />
-                                        <TextBlock x:Name="SelectedNexusDescriptionText" TextWrapping="Wrap" />
                                     </StackPanel>
                                 </ScrollViewer>
                             </TabItem>
@@ -1592,14 +1642,24 @@
                 </StackPanel>
                 <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
                     <Button x:Name="RefreshNexusCatalogButton" Content="Refresh Catalog" Style="{StaticResource SecondaryButton}" Click="RefreshNexusCatalog_Click" />
+                    <Button x:Name="InstallNexusCatalogButton"
+                            Content="Download &amp; Install"
+                            Style="{StaticResource PrimaryButton}"
+                            Click="InstallNexusCatalog_Click"
+                            IsEnabled="False" />
                     <Button x:Name="OpenNexusCatalogButton" Content="Open Nexus" Style="{StaticResource SecondaryButton}" Click="OpenNexusCatalog_Click" />
                 </WrapPanel>
             </DockPanel>
 
             <Grid Grid.Row="1" Margin="0,0,0,10">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="90" />
-                    <ColumnDefinition Width="360" />
+                    <ColumnDefinition Width="58" />
+                    <ColumnDefinition Width="260" />
+                    <ColumnDefinition Width="54" />
+                    <ColumnDefinition Width="150" />
+                    <ColumnDefinition Width="42" />
+                    <ColumnDefinition Width="180" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="Search" Style="{StaticResource MetricTitle}" VerticalAlignment="Center" />
@@ -1607,6 +1667,42 @@
                          Grid.Column="1"
                          Height="30"
                          TextChanged="NexusCatalogSearchTextBox_TextChanged" />
+                <TextBlock Grid.Column="2" Text="Show" Style="{StaticResource MetricTitle}" VerticalAlignment="Center" Margin="10,0,0,0" />
+                <ComboBox x:Name="NexusCatalogFilterComboBox"
+                          Grid.Column="3"
+                          Height="30"
+                          SelectionChanged="NexusCatalogFilterComboBox_SelectionChanged">
+                    <ComboBoxItem Content="All mods" Tag="All" IsSelected="True" />
+                    <ComboBoxItem Content="Installed" Tag="Installed" />
+                    <ComboBoxItem Content="Updates" Tag="Updates" />
+                    <ComboBoxItem Content="Not installed" Tag="NotInstalled" />
+                </ComboBox>
+                <TextBlock Grid.Column="4" Text="Sort" Style="{StaticResource MetricTitle}" VerticalAlignment="Center" Margin="10,0,0,0" />
+                <ComboBox x:Name="NexusCatalogSortComboBox"
+                          Grid.Column="5"
+                          Height="30"
+                          SelectionChanged="NexusCatalogSortComboBox_SelectionChanged">
+                    <ComboBoxItem Content="Newest" Tag="Newest" IsSelected="True" />
+                    <ComboBoxItem Content="Most downloaded" Tag="Downloads" />
+                    <ComboBoxItem Content="Most endorsed" Tag="Endorsements" />
+                    <ComboBoxItem Content="Most viewed" Tag="Views" />
+                    <ComboBoxItem Content="Name" Tag="Name" />
+                </ComboBox>
+                <CheckBox x:Name="NexusCatalogCompactModeCheckBox"
+                           Grid.Column="6"
+                           Content="Compact mode"
+                           VerticalAlignment="Center"
+                           Margin="14,0,0,0"
+                           Checked="NexusCatalogCompactModeCheckBox_Changed"
+                           Unchecked="NexusCatalogCompactModeCheckBox_Changed"
+                           ToolTip="Show the Nexus catalog as a compact table." />
+                <TextBlock x:Name="NexusCatalogInstallAccessText"
+                           Grid.Column="7"
+                           Style="{StaticResource MutedText}"
+                           VerticalAlignment="Center"
+                           TextAlignment="Right"
+                           TextWrapping="Wrap"
+                           Margin="12,0,0,0" />
             </Grid>
 
             <Grid Grid.Row="2">
@@ -1622,17 +1718,173 @@
                         CornerRadius="6"
                         Padding="12"
                         Margin="0,0,12,0">
-                    <ListView x:Name="NexusCatalogListView" SelectionChanged="NexusCatalogListView_SelectionChanged">
-                        <ListView.View>
-                            <GridView>
-                                <GridViewColumn Header="Mod" Width="240" DisplayMemberBinding="{Binding Name}" />
-                                <GridViewColumn Header="Version" Width="88" DisplayMemberBinding="{Binding Version}" />
-                                <GridViewColumn Header="Author" Width="140" DisplayMemberBinding="{Binding Author}" />
-                                <GridViewColumn Header="Downloads" Width="92" DisplayMemberBinding="{Binding Downloads}" />
-                                <GridViewColumn Header="Status" Width="92" DisplayMemberBinding="{Binding Status}" />
-                            </GridView>
-                        </ListView.View>
-                    </ListView>
+                    <Grid>
+                        <ListView x:Name="NexusCatalogListView"
+                                  Visibility="Collapsed"
+                                  SelectionChanged="NexusCatalogListView_SelectionChanged">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Mod" Width="240" DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="Version" Width="88" DisplayMemberBinding="{Binding Version}" />
+                                    <GridViewColumn Header="Author" Width="140" DisplayMemberBinding="{Binding Author}" />
+                                    <GridViewColumn Header="Downloads" Width="92" DisplayMemberBinding="{Binding Downloads}" />
+                                    <GridViewColumn Header="Status" Width="170" DisplayMemberBinding="{Binding Status}" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+
+                        <Grid x:Name="NexusCatalogTileView">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <ListBox x:Name="NexusCatalogTileListBox"
+                                     Grid.Row="0"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     Padding="0"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                     SelectionChanged="NexusCatalogTileListBox_SelectionChanged">
+                                <ListBox.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <UniformGrid Columns="3" />
+                                    </ItemsPanelTemplate>
+                                </ListBox.ItemsPanel>
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="Height" Value="234" />
+                                        <Setter Property="Margin" Value="4" />
+                                        <Setter Property="Padding" Value="0" />
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                        <Setter Property="VerticalContentAlignment" Value="Stretch" />
+                                        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <Border x:Name="TileBorder"
+                                                            Background="{StaticResource PanelAltBrush}"
+                                                            BorderBrush="{StaticResource BorderBrushDark}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="6"
+                                                            Padding="8"
+                                                            SnapsToDevicePixels="True">
+                                                        <ContentPresenter />
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="TileBorder" Property="Background" Value="{StaticResource HoverBrush}" />
+                                                            <Setter TargetName="TileBorder" Property="BorderBrush" Value="#3D3D3D" />
+                                                        </Trigger>
+                                                        <Trigger Property="IsSelected" Value="True">
+                                                            <Setter TargetName="TileBorder" Property="Background" Value="{StaticResource SelectedSoftBrush}" />
+                                                            <Setter TargetName="TileBorder" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="132" />
+                                                <RowDefinition Height="*" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <Border Grid.Row="0"
+                                                    Background="#111111"
+                                                    BorderBrush="{StaticResource SubtleBorderBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="4"
+                                                    Margin="0,0,0,8"
+                                                    ClipToBounds="True">
+                                                <Grid>
+                                                    <TextBlock Text="No preview"
+                                                               Style="{StaticResource MutedText}"
+                                                               HorizontalAlignment="Center"
+                                                               VerticalAlignment="Center" />
+                                                    <Image Source="{Binding Thumbnail}"
+                                                           Stretch="Uniform"
+                                                           RenderOptions.BitmapScalingMode="HighQuality" />
+                                                </Grid>
+                                            </Border>
+                                            <StackPanel Grid.Row="1">
+                                                <TextBlock Text="{Binding Name}"
+                                                           FontSize="14"
+                                                           FontWeight="SemiBold"
+                                                           TextWrapping="Wrap"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           MaxHeight="38" />
+                                                <TextBlock Text="{Binding Meta}"
+                                                           Style="{StaticResource MutedText}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           TextWrapping="NoWrap"
+                                                           Margin="0,2,0,0" />
+                                            </StackPanel>
+                                            <Grid Grid.Row="2" Margin="0,6,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0"
+                                                           Text="{Binding DownloadsLabel}"
+                                                           Style="{StaticResource MutedText}"
+                                                           VerticalAlignment="Center" />
+                                                <TextBlock Grid.Column="1"
+                                                           Text="{Binding Status}"
+                                                           FontWeight="SemiBold"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           MaxWidth="118"
+                                                           VerticalAlignment="Center">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsInstalled}" Value="True">
+                                                                    <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding HasUpdate}" Value="True">
+                                                                    <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </Grid>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <Grid Grid.Row="1" Margin="4,8,4,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="PreviousNexusCatalogTilePageButton"
+                                        Grid.Column="1"
+                                        Content="Previous"
+                                        Style="{StaticResource CompactSecondaryButton}"
+                                        Click="PreviousNexusCatalogTilePage_Click" />
+                                <TextBlock x:Name="NexusCatalogTilePageText"
+                                           Grid.Column="2"
+                                           Style="{StaticResource MutedText}"
+                                           Margin="10,0"
+                                           VerticalAlignment="Center" />
+                                <Button x:Name="NextNexusCatalogTilePageButton"
+                                        Grid.Column="3"
+                                        Content="Next"
+                                        Style="{StaticResource CompactSecondaryButton}"
+                                        Click="NextNexusCatalogTilePage_Click" />
+                            </Grid>
+                        </Grid>
+                    </Grid>
                 </Border>
 
                 <Border Grid.Column="1"
@@ -1641,23 +1893,107 @@
                         BorderThickness="1"
                         CornerRadius="6"
                         Padding="12">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <StackPanel>
-                            <Border Height="150"
-                                    Background="{StaticResource PanelAltBrush}"
-                                    BorderBrush="{StaticResource BorderBrushDark}"
-                                    BorderThickness="1"
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="220" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                            <Border Grid.Row="0"
+                                     Background="{StaticResource PanelAltBrush}"
+                                     BorderBrush="{StaticResource BorderBrushDark}"
+                                     BorderThickness="1"
                                     CornerRadius="6"
                                     Margin="0,0,0,10">
-                                <Image x:Name="NexusCatalogImage" Stretch="UniformToFill" />
+                                <Image x:Name="NexusCatalogImage"
+                                       Margin="6"
+                                       Stretch="Uniform"
+                                       RenderOptions.BitmapScalingMode="HighQuality" />
                             </Border>
-                            <TextBlock x:Name="NexusCatalogNameText" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" />
-                            <TextBlock x:Name="NexusCatalogMetaText" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,2,0,6" />
-                            <TextBlock x:Name="NexusCatalogStatsText" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,10" />
-                            <TextBlock Text="Description" Style="{StaticResource MutedText}" />
-                            <TextBlock x:Name="NexusCatalogDescriptionText" TextWrapping="Wrap" />
-                        </StackPanel>
-                    </ScrollViewer>
+                            <TextBlock x:Name="NexusCatalogNameText" Grid.Row="1" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" />
+                            <TextBlock x:Name="NexusCatalogMetaText" Grid.Row="2" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,2,0,6" />
+                            <TextBlock x:Name="NexusCatalogStatsText" Grid.Row="3" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,10" />
+                            <TabControl Grid.Row="4">
+                                <TabItem Header="Description">
+                                    <FlowDocumentScrollViewer x:Name="NexusCatalogDescriptionViewer"
+                                                              Margin="8"
+                                                              Background="Transparent"
+                                                              BorderThickness="0"
+                                                              HorizontalScrollBarVisibility="Disabled"
+                                                              VerticalScrollBarVisibility="Auto"
+                                                              IsToolBarVisible="False" />
+                                </TabItem>
+                                <TabItem x:Name="NexusCatalogImagesTab" Header="Images">
+                                    <Grid Margin="8">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="*" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <Border Background="{StaticResource PanelAltBrush}"
+                                                BorderBrush="{StaticResource BorderBrushDark}"
+                                                BorderThickness="1"
+                                                CornerRadius="6">
+                                            <Image x:Name="NexusCatalogGalleryImage"
+                                                   Margin="6"
+                                                   Stretch="Uniform"
+                                                   RenderOptions.BitmapScalingMode="HighQuality" />
+                                        </Border>
+                                        <Grid Grid.Row="1" Margin="0,8,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Button x:Name="PreviousNexusCatalogImageButton"
+                                                    Grid.Column="0"
+                                                    Width="34"
+                                                    Content="&#x2039;"
+                                                    Style="{StaticResource SecondaryButton}"
+                                                    ToolTip="Previous image"
+                                                    Click="PreviousNexusCatalogImage_Click" />
+                                            <TextBlock x:Name="NexusCatalogImageCountText"
+                                                       Grid.Column="1"
+                                                       Style="{StaticResource MutedText}"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center" />
+                                            <Button x:Name="OpenNexusCatalogImageButton"
+                                                    Grid.Column="2"
+                                                    Content="Open Image"
+                                                    Style="{StaticResource SecondaryButton}"
+                                                    Click="OpenNexusCatalogImage_Click" />
+                                            <Button x:Name="OpenNexusCatalogImagesPageButton"
+                                                    Grid.Column="3"
+                                                    Content="Nexus Gallery"
+                                                    Style="{StaticResource SecondaryButton}"
+                                                    Click="OpenNexusCatalogImagesPage_Click" />
+                                            <Button x:Name="NextNexusCatalogImageButton"
+                                                    Grid.Column="4"
+                                                    Width="34"
+                                                    Content="&#x203A;"
+                                                    Style="{StaticResource SecondaryButton}"
+                                                    ToolTip="Next image"
+                                                    Click="NextNexusCatalogImage_Click" />
+                                        </Grid>
+                                    </Grid>
+                                </TabItem>
+                                <TabItem Header="Posts">
+                                    <StackPanel Margin="12">
+                                        <TextBlock Text="Posts and comments are hosted on Nexus Mods. Open the discussion page to read or reply."
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,0,0,12" />
+                                        <Button x:Name="OpenNexusCatalogPostsButton"
+                                                Content="Open Posts &amp; Comments"
+                                                Style="{StaticResource PrimaryButton}"
+                                                HorizontalAlignment="Left"
+                                                Click="OpenNexusCatalogPosts_Click" />
+                                    </StackPanel>
+                                </TabItem>
+                            </TabControl>
+                    </Grid>
                 </Border>
             </Grid>
         </Grid>
@@ -1745,7 +2081,7 @@
                                     </Grid.ColumnDefinitions>
                                     <StackPanel Grid.Column="0" Margin="0,0,14,0">
                                         <TextBlock Text=".UCU Recipe" FontWeight="SemiBold" />
-                                        <TextBlock Text="Small file with Nexus links and load order. Missing mods are opened for manual download."
+                                        <TextBlock Text="Small profile recipe with Nexus links and load order. Premium installs missing mods automatically; without Premium, download them manually."
                                                    Style="{StaticResource MutedText}"
                                                    TextWrapping="Wrap" />
                                     </StackPanel>
@@ -1849,7 +2185,7 @@
                                     Margin="0,0,8,0">
                                 <StackPanel>
                                     <TextBlock Text=".UCU" FontWeight="SemiBold" />
-                                    <TextBlock Text="Profile recipe. Uses metadata links; missing archives are downloaded manually from Nexus pages."
+                                    <TextBlock Text="Profile recipe. Nexus Premium can download missing mods automatically; manual Nexus pages remain available."
                                                Style="{StaticResource MutedText}"
                                                TextWrapping="Wrap" />
                                 </StackPanel>
@@ -1931,15 +2267,17 @@
                 <TextBlock Text="Manager preferences and metadata settings" Style="{StaticResource MutedText}" />
             </StackPanel>
 
-            <Border Grid.Row="1"
-                    Background="{StaticResource PanelBrush}"
-                    BorderBrush="{StaticResource BorderBrushDark}"
-                    BorderThickness="1"
-                    CornerRadius="6"
-                    Padding="12"
-                    MaxWidth="680"
-                    HorizontalAlignment="Left"
-                    VerticalAlignment="Top">
+            <ScrollViewer Grid.Row="1"
+                          HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollBarVisibility="Auto">
+                <Border Background="{StaticResource PanelBrush}"
+                        BorderBrush="{StaticResource BorderBrushDark}"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="12"
+                        MaxWidth="680"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Top">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -1962,12 +2300,57 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Row="0" Text="Nexus Metadata" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Grid.Row="0" Text="Nexus Account" Style="{StaticResource SectionTitle}" />
+                    <Border Grid.Row="1"
+                            Background="{StaticResource PanelAltBrush}"
+                            BorderBrush="{StaticResource BorderBrushDark}"
+                            BorderThickness="1"
+                            CornerRadius="5"
+                            Padding="12,10"
+                            Margin="0,0,0,2">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,14,0">
+                                <TextBlock x:Name="NexusAccountNameText"
+                                           Text="OAuth registration pending"
+                                           FontSize="14"
+                                           FontWeight="SemiBold"
+                                           TextWrapping="Wrap" />
+                                <TextBlock x:Name="NexusAccountStatusText"
+                                           Text="Nexus metadata remains available while account access is being prepared."
+                                           Style="{StaticResource MutedText}"
+                                           Margin="0,3,0,0" />
+                            </StackPanel>
+                            <WrapPanel Grid.Column="1"
+                                       HorizontalAlignment="Right"
+                                       VerticalAlignment="Center">
+                                <Button x:Name="ConnectNexusAccountButton"
+                                        Content="Connect Nexus"
+                                        Style="{StaticResource PrimaryButton}"
+                                        Click="ConnectNexusAccount_Click"
+                                        ToolTip="Sign in through Nexus Mods using OAuth 2.0 with PKCE." />
+                                <Button x:Name="DisconnectNexusAccountButton"
+                                        Content="Disconnect"
+                                        Style="{StaticResource SecondaryButton}"
+                                        Click="DisconnectNexusAccount_Click"
+                                        ToolTip="Remove the locally stored Nexus authorization." />
+                            </WrapPanel>
+                        </Grid>
+                    </Border>
+
+                    <TextBlock Grid.Row="2"
+                               Text="Nexus Metadata"
+                               Style="{StaticResource SectionTitle}"
+                               Margin="0,14,0,6" />
                     <StackPanel x:Name="AdvancedNexusDomainPanel"
-                                Grid.Row="1"
-                                Grid.RowSpan="2"
+                                Grid.Row="3"
                                 Visibility="Collapsed">
                         <TextBlock Text="Game domain"
                                    Style="{StaticResource MetricTitle}"
@@ -1979,20 +2362,20 @@
                                  LostFocus="NexusGameDomainTextBox_LostFocus" />
                     </StackPanel>
                     <CheckBox x:Name="AutoLinkNexusOnStartupCheckBox"
-                              Grid.Row="3"
+                              Grid.Row="4"
                               Content="Auto link Nexus metadata on startup"
                               Margin="0,12,0,0"
                               Checked="AutoLinkNexusOnStartupCheckBox_Changed"
                               Unchecked="AutoLinkNexusOnStartupCheckBox_Changed" />
-                    <TextBlock Grid.Row="4"
-                               Text="When enabled, UCU ModManager links installed mods to Nexus metadata after startup without asking."
+                    <TextBlock Grid.Row="5"
+                               Text="When enabled, UCU Mod Manager links installed mods to Nexus metadata after startup without asking."
                                Style="{StaticResource MutedText}"
                                Margin="23,4,0,0" />
-                    <TextBlock Grid.Row="5"
+                    <TextBlock Grid.Row="6"
                                Text="Metadata catalog"
                                Style="{StaticResource MetricTitle}"
                                Margin="0,14,0,4" />
-                    <DockPanel Grid.Row="6" LastChildFill="True">
+                    <DockPanel Grid.Row="7" LastChildFill="True">
                         <Button x:Name="RefreshNexusMetadataButton"
                                 DockPanel.Dock="Left"
                                 Content="Refresh Metadata"
@@ -2004,57 +2387,123 @@
                                    VerticalAlignment="Center"
                                    Margin="10,0,0,0" />
                     </DockPanel>
-                    <TextBlock Grid.Row="7"
+                    <TextBlock Grid.Row="8"
+                               Text="Manager Updates"
+                               Style="{StaticResource SectionTitle}"
+                               Margin="0,16,0,6" />
+                    <Border Grid.Row="9"
+                            Background="{StaticResource PanelAltBrush}"
+                            BorderBrush="{StaticResource BorderBrushDark}"
+                            BorderThickness="1"
+                            CornerRadius="5"
+                            Padding="12,10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,14,0">
+                                <TextBlock x:Name="CurrentManagerVersionText"
+                                           Text="Current version"
+                                           FontSize="14"
+                                           FontWeight="SemiBold" />
+                                <TextBlock x:Name="ManagerUpdateStatusText"
+                                           Text="Update check has not run yet."
+                                           Style="{StaticResource MutedText}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,3,0,0" />
+                            </StackPanel>
+                            <WrapPanel Grid.Column="1"
+                                       HorizontalAlignment="Right"
+                                       VerticalAlignment="Center">
+                                <Button x:Name="CheckManagerUpdatesButton"
+                                        Content="Check Now"
+                                        Style="{StaticResource SecondaryButton}"
+                                        Click="CheckManagerUpdates_Click" />
+                                <Button x:Name="ViewManagerUpdateButton"
+                                        Content="View Changes"
+                                        Style="{StaticResource SecondaryButton}"
+                                        IsEnabled="False"
+                                        Click="ViewManagerUpdate_Click" />
+                                <Button x:Name="DownloadManagerUpdateButton"
+                                        Content="Download Update"
+                                        Style="{StaticResource PrimaryButton}"
+                                        IsEnabled="False"
+                                        Click="DownloadManagerUpdate_Click" />
+                            </WrapPanel>
+                        </Grid>
+                    </Border>
+                    <CheckBox x:Name="CheckManagerUpdatesOnStartupCheckBox"
+                              Grid.Row="10"
+                              Content="Check for manager updates on startup"
+                              Margin="0,10,0,0"
+                              Checked="CheckManagerUpdatesOnStartupCheckBox_Changed"
+                              Unchecked="CheckManagerUpdatesOnStartupCheckBox_Changed" />
+                    <StackPanel x:Name="AdvancedManagerUpdatePanel"
+                                Grid.Row="11"
+                                Visibility="Collapsed">
+                        <CheckBox x:Name="IncludeManagerPrereleasesCheckBox"
+                                  Content="Receive pre-release updates"
+                                  Margin="0,8,0,0"
+                                  Checked="IncludeManagerPrereleasesCheckBox_Changed"
+                                  Unchecked="IncludeManagerPrereleasesCheckBox_Changed" />
+                        <TextBlock Text="Alpha builds always follow compatible Alpha, Beta, RC and Stable releases. Stable builds use this option to include pre-releases."
+                                   Style="{StaticResource MutedText}"
+                                   TextWrapping="Wrap"
+                                   Margin="23,4,0,0" />
+                    </StackPanel>
+                    <TextBlock Grid.Row="12"
                                Text="Interface"
                                Style="{StaticResource SectionTitle}"
                                Margin="0,16,0,4" />
                     <CheckBox x:Name="ShowAdvancedModColumnsCheckBox"
-                              Grid.Row="8"
+                              Grid.Row="13"
                               Content="Advanced Mode"
                               Checked="ShowAdvancedModColumnsCheckBox_Changed"
                               Unchecked="ShowAdvancedModColumnsCheckBox_Changed" />
-                    <TextBlock Grid.Row="9"
+                    <TextBlock Grid.Row="14"
                                Text="Shows the full technical view for mod authors, debugging and detailed file review."
                                Style="{StaticResource MutedText}"
                                Margin="23,4,0,0" />
-                    <TextBlock Grid.Row="10"
+                    <TextBlock Grid.Row="15"
                                Text="Virtualization"
                                Style="{StaticResource SectionTitle}"
                                Margin="0,16,0,4" />
                     <CheckBox x:Name="VirtualizationEnabledCheckBox"
-                              Grid.Row="11"
+                              Grid.Row="16"
                               Content="Enable Virtualized Launch"
                               Checked="VirtualizationEnabledCheckBox_Changed"
                               Unchecked="VirtualizationEnabledCheckBox_Changed" />
-                    <TextBlock Grid.Row="12"
+                    <TextBlock Grid.Row="17"
                                Text="Keeps mods and generated profile state inside the manager folder. The game starts from a linked profile runtime image instead of receiving copied mod files."
                                Style="{StaticResource MutedText}"
                                TextWrapping="Wrap"
                                Margin="23,4,0,0" />
                     <CheckBox x:Name="ExperimentalVirtualizedLaunchCheckBox"
-                              Grid.Row="13"
+                              Grid.Row="18"
                               Content="Use virtualized launch for active profile"
                               Margin="0,10,0,0"
                               Checked="ExperimentalVirtualizedLaunchCheckBox_Changed"
                               Unchecked="ExperimentalVirtualizedLaunchCheckBox_Changed" />
-                    <TextBlock Grid.Row="14"
+                    <TextBlock Grid.Row="19"
                                Text="Saved in the active profile. BepInEx remains installed in the real game folder, while enabled mods are linked into the profile runtime image."
                                Style="{StaticResource MutedText}"
                                TextWrapping="Wrap"
                                Margin="23,4,0,0" />
                     <CheckBox x:Name="RedirectVirtualWritesCheckBox"
-                              Grid.Row="15"
+                              Grid.Row="20"
                               Content="Redirect writes to profile state"
                               Margin="0,10,0,0"
                               Checked="RedirectVirtualWritesCheckBox_Changed"
                               Unchecked="RedirectVirtualWritesCheckBox_Changed" />
-                    <TextBlock Grid.Row="16"
+                    <TextBlock Grid.Row="21"
                                Text="Saved in the active profile. BepInEx logs, generated configs and runtime files stay in the profile runtime folder."
                                Style="{StaticResource MutedText}"
                                TextWrapping="Wrap"
                                Margin="23,4,0,0" />
                 </Grid>
-            </Border>
+                </Border>
+            </ScrollViewer>
         </Grid>
         </Grid>
     </Grid>

@@ -9,7 +9,7 @@ public sealed record UcuModpackPackage(
     string PackageKind = UcuModpackPackage.PackageKindRecipe)
 {
     public const int CurrentFormatVersion = 1;
-    public const string DefaultCreatedBy = "UCU ModManager";
+    public const string DefaultCreatedBy = "UCU Mod Manager";
     public const string PackageKindRecipe = "Recipe";
     public const string PackageKindPortable = "Portable";
 }

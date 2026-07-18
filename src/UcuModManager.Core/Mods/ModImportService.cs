@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using UcuModManager.Core.Archives;
 using UcuModManager.Core.Storage;
 
 namespace UcuModManager.Core.Mods;
@@ -81,6 +82,8 @@ public sealed class ModImportService
         try
         {
             using var archive = ZipFile.OpenRead(archivePath);
+            var archiveSafety = ZipArchiveSafety.Validate(archive);
+            ZipArchiveSafety.EnsureSufficientDiskSpace(stagingFilesDirectoryPath, archiveSafety.TotalUncompressedBytes);
             var entryByPath = archive.Entries
                 .Where(entry => !IsDirectory(entry.FullName))
                 .ToDictionary(
@@ -156,9 +159,7 @@ public sealed class ModImportService
             Directory.CreateDirectory(destinationDirectory);
         }
 
-        using var source = entry.Open();
-        using var destination = File.Create(destinationPath);
-        source.CopyTo(destination);
+        ZipArchiveSafety.ExtractEntryToFile(entry, destinationPath, overwrite: true);
     }
 
     private static string CreateUniqueModId(string modsPath, string preferredModId)

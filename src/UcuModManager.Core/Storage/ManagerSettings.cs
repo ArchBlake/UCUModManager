@@ -9,7 +9,11 @@ public sealed record ManagerSettings(
     bool AutoLinkNexusOnStartup = true,
     bool ShowAdvancedModColumns = false,
     bool VirtualizationEnabled = true,
-    bool VirtualizationIntroShown = false)
+    bool VirtualizationIntroShown = false,
+    bool NexusCatalogCompactMode = false,
+    bool CheckManagerUpdatesOnStartup = true,
+    bool IncludeManagerPrereleases = false,
+    DateTimeOffset? LastManagerUpdateCheckAt = null)
 {
     public static ManagerSettings Empty { get; } = new(
         string.Empty,
@@ -20,5 +24,9 @@ public sealed record ManagerSettings(
         AutoLinkNexusOnStartup: true,
         ShowAdvancedModColumns: false,
         VirtualizationEnabled: true,
-        VirtualizationIntroShown: false);
+        VirtualizationIntroShown: false,
+        NexusCatalogCompactMode: false,
+        CheckManagerUpdatesOnStartup: true,
+        IncludeManagerPrereleases: false,
+        LastManagerUpdateCheckAt: null);
 }
